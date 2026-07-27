@@ -1,0 +1,52 @@
+{
+  "name": "withyou-novel-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WithYou Novel desktop application",
+  "author": "WithYou Novel",
+  "main": "main.js",
+  "build": {
+    "appId": "com.withyou.novel",
+    "productName": "WithYou Novel",
+    "electronVersion": "35.7.5",
+    "directories": {
+      "output": "../release/delivery"
+    },
+    "files": [
+      "main.js"
+    ],
+    "extraResources": [
+      {
+        "from": "../.electron-build/standalone",
+        "to": "standalone",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../src/app/favicon.ico",
+        "to": "icon.ico"
+      }
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "win": {
+      "icon": "../src/app/favicon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WithYou Novel"
+    }
+  }
+}

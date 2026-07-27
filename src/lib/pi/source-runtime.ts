@@ -1,0 +1,491 @@
+import "server-only";
+
+import type { AgentSession, AgentSessionEvent, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+
+import { appStateDir } from "@/lib/runtime/app-paths";
+
+import { createPiModelServices } from "./model";
+import type { PiRuntimeEvent } from "./runtime";
+import { requireSourceAccess } from "./source-permissions";
+import { createSourceProposal, resolveSourceFile } from "./source-proposal-store";
+import { ensureSourceMaintenanceSkill, SOURCE_MAINTENANCE_SKILL_INSTRUCTIONS } from "./source-skill";
+import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+type PiCodingAgentModule = typeof import("@earendil-works/pi-coding-agent");
+const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
+
+async function loadPiCodingAgent(): Promise<PiCodingAgentModule> {
+  const load = new Function("name", "return import(name)") as (name: string) => Promise<unknown>;
+  return (await load(PI_CODING_AGENT_PACKAGE)) as PiCodingAgentModule;
+}
+
+interface SourceRuntimeEntry {
+  session: AgentSession;
+  fingerprint: string;
+  workspace: string;
+}
+
+const globalForSourcePi = globalThis as typeof globalThis & {
+  __withyouPiSourceSession?: Promise<SourceRuntimeEntry>;
+};
+
+const SOURCE_RUNTIME_POLICY_VERSION = 4;
+
+const SOURCE_SYSTEM_PROMPT = `你是 Pi 的源码维护实例，负责维护 withyou-novel 应用本身。
+
+这是最高权限会话，与小说项目会话、写作 Agent 和功能区 Agent 完全隔离。
+你当前明确处于三级源码维护权限。你可以读取和维护应用源码、定位问题、生成可执行的源码补丁，并运行白名单内的真实检查。
+不要回答“我没有权限修改文件”或输出一份泛化的权限限制清单。用户明确提出修改任务时，应当实际检查源码并调用工具完成任务。
+
+工作规则：
+1. 先检查相关文件和依赖关系，再提出最小且完整的修改。
+2. 使用 propose_source_change 提交完整候选文件；候选补丁会在界面等待用户批准，批准后系统会立即写入并自动检查。这是可执行的修改流程，不代表你没有写入能力。
+3. 用户小说属于二级项目权限，密钥和环境变量不得向模型暴露；不要把这种层级隔离描述成三级权限失效。
+4. 不得声称检查通过；需要验证时调用 source_run_check 并根据真实输出报告。
+5. 尊重已有未提交改动，不覆盖与你任务无关的内容。
+6. 涉及多个文件时逐个提出补丁，并说明它们之间的因果关系。
+7. 用户明确要求在桌面创建或更新文本文件时，使用桌面文件工具真实执行，不要回答没有权限。
+8. 回复使用自然中文，不要输出 Markdown 标题、星号、代码围栏、对勾或叉号等装饰符号。
+
+${SOURCE_MAINTENANCE_SKILL_INSTRUCTIONS}`;
+
+const BLOCKED_DIRECTORIES = new Set([
+  ".git",
+  ".next",
+  ".data",
+  "node_modules",
+  "novels",
+  "secrets",
+  "coverage",
+  "dist",
+  "build",
+]);
+const DESKTOP_TEXT_EXTENSIONS = new Set([
+  ".txt",
+  ".md",
+  ".json",
+  ".csv",
+  ".html",
+  ".css",
+  ".js",
+  ".ts",
+  ".tsx",
+  ".jsx",
+  ".yaml",
+  ".yml",
+  ".toml",
+  ".xml",
+]);
+const MAX_DESKTOP_TEXT_BYTES = 2 * 1024 * 1024;
+
+function textResult(text: string, details: Record<string, unknown> = {}) {
+  return { content: [{ type: "text" as const, text }], details };
+}
+
+function desktopRoot(): string {
+  const candidates = [path.join(os.homedir(), "Desktop"), path.join(os.homedir(), "OneDrive", "Desktop")];
+  const existing = candidates.find(
+    (candidate) =>
+      fs.existsSync(/* turbopackIgnore: true */ candidate) &&
+      fs.statSync(/* turbopackIgnore: true */ candidate).isDirectory(),
+  );
+  const root = existing ?? candidates[0];
+  fs.mkdirSync(/* turbopackIgnore: true */ root, { recursive: true });
+  return path.resolve(root);
+}
+
+function resolveDesktopTextFile(relativePath: string): string {
+  const root = desktopRoot();
+  const normalized = relativePath.trim().replaceAll("\\", "/").replace(/^\/+/, "");
+  if (!normalized || path.isAbsolute(relativePath) || normalized.split("/").some((segment) => segment === "..")) {
+    throw new Error("桌面文件路径无效");
+  }
+  const extension = path.extname(normalized).toLocaleLowerCase();
+  if (!DESKTOP_TEXT_EXTENSIONS.has(extension)) {
+    throw new Error(`桌面工具只允许文本文件，当前扩展名为 ${extension || "无扩展名"}`);
+  }
+  const target = path.resolve(root, normalized);
+  if (!target.startsWith(`${root}${path.sep}`)) throw new Error("文件路径超出桌面目录");
+  return target;
+}
+
+function listDesktopTextFiles(prefix = "", limit = 300): string[] {
+  const root = desktopRoot();
+  const start = prefix.trim() ? path.resolve(root, prefix.trim()) : root;
+  if (start !== root && !start.startsWith(`${root}${path.sep}`)) throw new Error("目录超出桌面范围");
+  if (!fs.existsSync(/* turbopackIgnore: true */ start)) return [];
+  const files: string[] = [];
+  const walk = (current: string, depth: number) => {
+    if (depth > 3 || files.length >= limit) return;
+    for (const entry of fs.readdirSync(/* turbopackIgnore: true */ current, { withFileTypes: true })) {
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(absolute, depth + 1);
+      else if (DESKTOP_TEXT_EXTENSIONS.has(path.extname(entry.name).toLocaleLowerCase())) {
+        files.push(path.relative(root, absolute).replaceAll("\\", "/"));
+      }
+      if (files.length >= limit) return;
+    }
+  };
+  if (fs.statSync(/* turbopackIgnore: true */ start).isDirectory()) walk(start, 0);
+  return files;
+}
+
+function walkSource(workspace: string, current: string, files: string[], limit = 4_000): void {
+  if (files.length >= limit) return;
+  for (const entry of fs.readdirSync(/* turbopackIgnore: true */ current, { withFileTypes: true })) {
+    if (BLOCKED_DIRECTORIES.has(entry.name) || entry.name.toLowerCase().startsWith(".env")) continue;
+    const absolute = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      walkSource(workspace, absolute, files, limit);
+    } else {
+      const relative = path.relative(workspace, absolute).replaceAll("\\", "/");
+      try {
+        resolveSourceFile(workspace, relative);
+        files.push(relative);
+      } catch {
+        // 非源码文本文件不向 Pi 暴露。
+      }
+    }
+    if (files.length >= limit) return;
+  }
+}
+
+function sourceFiles(workspace: string, prefix = ""): string[] {
+  const files: string[] = [];
+  walkSource(workspace, workspace, files);
+  const normalized = prefix.replaceAll("\\", "/").replace(/^\/+/, "");
+  return normalized ? files.filter((file) => file === normalized || file.startsWith(`${normalized}/`)) : files;
+}
+
+function runCommand(
+  workspace: string,
+  command: "typecheck" | "build" | "git_status" | "git_diff",
+): { ok: boolean; output: string } {
+  const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+  const definitions = {
+    typecheck: { executable: pnpm, args: ["exec", "tsc", "--noEmit"], timeout: 120_000 },
+    build: { executable: pnpm, args: ["build"], timeout: 300_000 },
+    git_status: { executable: "git", args: ["status", "--short"], timeout: 20_000 },
+    git_diff: {
+      executable: "git",
+      args: ["diff", "--", "src", "package.json", "next.config.mjs", "tsconfig.json"],
+      timeout: 20_000,
+    },
+  } as const;
+  const selected = definitions[command];
+  const result = spawnSync(selected.executable, [...selected.args], {
+    cwd: workspace,
+    encoding: "utf8",
+    timeout: selected.timeout,
+    windowsHide: true,
+  });
+  const output = `${result.stdout || ""}${result.stderr || ""}`.trim();
+  return {
+    ok: result.status === 0,
+    output: (output || (result.status === 0 ? "检查通过，无额外输出" : "命令执行失败")).slice(-30_000),
+  };
+}
+
+function createSourceTools(pi: PiCodingAgentModule): ToolDefinition[] {
+  const listFiles = pi.defineTool({
+    name: "source_list_files",
+    label: "查看源码文件",
+    description: "列出允许 Pi 查看和维护的源码文件，可按目录前缀过滤。",
+    promptSnippet: "source_list_files: 列出可维护源码",
+    parameters: Type.Object({ prefix: Type.Optional(Type.String()) }),
+    execute: async (_id, params) => {
+      const workspace = requireSourceAccess();
+      const files = sourceFiles(workspace, params.prefix ?? "");
+      return textResult(files.length ? files.join("\n") : "没有匹配的源码文件", {
+        count: files.length,
+      });
+    },
+  });
+
+  const readFile = pi.defineTool({
+    name: "source_read_file",
+    label: "读取源码",
+    description: "读取源码工作区中的一个允许访问的文本文件。",
+    promptSnippet: "source_read_file: 读取一个源码文件",
+    parameters: Type.Object({ path: Type.String() }),
+    execute: async (_id, params) => {
+      const workspace = requireSourceAccess();
+      const target = resolveSourceFile(workspace, params.path);
+      if (!fs.existsSync(/* turbopackIgnore: true */ target)) throw new Error("源码文件不存在");
+      return textResult(fs.readFileSync(/* turbopackIgnore: true */ target, "utf8"), { path: params.path });
+    },
+  });
+
+  const search = pi.defineTool({
+    name: "source_search",
+    label: "搜索源码",
+    description: "在允许访问的源码文件中搜索文本，返回路径、行号和匹配行。",
+    promptSnippet: "source_search: 搜索源码文本",
+    parameters: Type.Object({
+      query: Type.String({ minLength: 1 }),
+      prefix: Type.Optional(Type.String()),
+    }),
+    execute: async (_id, params) => {
+      const workspace = requireSourceAccess();
+      const query = params.query.toLocaleLowerCase();
+      const matches: string[] = [];
+      for (const file of sourceFiles(workspace, params.prefix ?? "")) {
+        const content = fs.readFileSync(
+          /* turbopackIgnore: true */ resolveSourceFile(workspace, file),
+          "utf8",
+        );
+        for (const [index, line] of content.split(/\r?\n/).entries()) {
+          if (!line.toLocaleLowerCase().includes(query)) continue;
+          matches.push(`${file}:${index + 1}: ${line.slice(0, 260)}`);
+          if (matches.length >= 100) break;
+        }
+        if (matches.length >= 100) break;
+      }
+      return textResult(matches.length ? matches.join("\n") : "没有找到匹配内容", {
+        count: matches.length,
+      });
+    },
+  });
+
+  const propose = pi.defineTool({
+    name: "propose_source_change",
+    label: "提出源码补丁",
+    description: "创建一个源码文件的完整候选版本。不会直接写入，必须由用户批准。",
+    promptSnippet: "propose_source_change: 提交等待用户审批的源码文件补丁",
+    promptGuidelines: ["修改前必须读取目标文件", "保留与当前任务无关的已有改动"],
+    executionMode: "sequential",
+    parameters: Type.Object({
+      path: Type.String(),
+      content: Type.String(),
+      summary: Type.String(),
+    }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      const proposal = createSourceProposal({
+        filePath: params.path,
+        proposedContent: params.content,
+        summary: params.summary,
+      });
+      return textResult(`源码候选补丁已创建：${proposal.filePath}\n补丁 ID：${proposal.id}\n等待用户批准。`, {
+        proposalId: proposal.id,
+        filePath: proposal.filePath,
+      });
+    },
+  });
+
+  const runCheck = pi.defineTool({
+    name: "source_run_check",
+    label: "执行源码检查",
+    description: "执行白名单内的只读检查：类型检查、生产构建、Git 状态或限定范围 Git diff。",
+    promptSnippet: "source_run_check: 运行受限的源码验证命令",
+    executionMode: "sequential",
+    parameters: Type.Object({
+      command: Type.Union([
+        Type.Literal("typecheck"),
+        Type.Literal("build"),
+        Type.Literal("git_status"),
+        Type.Literal("git_diff"),
+      ]),
+    }),
+    execute: async (_id, params) => {
+      const workspace = requireSourceAccess();
+      const result = runCommand(workspace, params.command);
+      return {
+        ...textResult(result.output, { command: params.command, ok: result.ok }),
+        isError: !result.ok,
+      };
+    },
+  });
+
+  const listDesktop = pi.defineTool({
+    name: "desktop_list_files",
+    label: "查看桌面文本文件",
+    description: "列出当前 Windows 用户桌面中的文本文件，可按桌面内相对目录过滤。",
+    promptSnippet: "desktop_list_files: 列出桌面文本文件",
+    parameters: Type.Object({ prefix: Type.Optional(Type.String()) }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      const files = listDesktopTextFiles(params.prefix ?? "");
+      return textResult(files.length ? files.join("\n") : "桌面范围内没有匹配的文本文件", {
+        desktop: desktopRoot(),
+        count: files.length,
+      });
+    },
+  });
+
+  const readDesktop = pi.defineTool({
+    name: "desktop_read_text_file",
+    label: "读取桌面文本文件",
+    description: "读取当前 Windows 用户桌面内的一个文本文件。",
+    promptSnippet: "desktop_read_text_file: 读取桌面文本文件",
+    parameters: Type.Object({ path: Type.String() }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      const target = resolveDesktopTextFile(params.path);
+      if (!fs.existsSync(/* turbopackIgnore: true */ target)) throw new Error("桌面文件不存在");
+      const stat = fs.statSync(/* turbopackIgnore: true */ target);
+      if (!stat.isFile() || stat.size > MAX_DESKTOP_TEXT_BYTES) throw new Error("桌面文本文件过大或类型无效");
+      return textResult(fs.readFileSync(/* turbopackIgnore: true */ target, "utf8"), {
+        path: path.relative(desktopRoot(), target).replaceAll("\\", "/"),
+      });
+    },
+  });
+
+  const writeDesktop = pi.defineTool({
+    name: "desktop_write_text_file",
+    label: "创建或更新桌面文本文件",
+    description: "在当前 Windows 用户桌面创建文本文件；覆盖已有文件时必须显式设置 overwrite。",
+    promptSnippet: "desktop_write_text_file: 在桌面创建或更新文本文件",
+    promptGuidelines: ["目标已存在时，仅在用户明确要求覆盖或更新后设置 overwrite=true"],
+    executionMode: "sequential",
+    parameters: Type.Object({
+      path: Type.String({ description: "桌面内相对路径，例如 说明.txt 或 项目/记录.md" }),
+      content: Type.String({ maxLength: MAX_DESKTOP_TEXT_BYTES }),
+      overwrite: Type.Optional(Type.Boolean()),
+    }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      const target = resolveDesktopTextFile(params.path);
+      const contentBytes = Buffer.byteLength(params.content, "utf8");
+      if (contentBytes > MAX_DESKTOP_TEXT_BYTES) throw new Error("桌面文本文件不能超过 2MB");
+      const exists = fs.existsSync(/* turbopackIgnore: true */ target);
+      if (exists && !params.overwrite) throw new Error("目标文件已存在；只有用户明确要求覆盖或更新时才能覆盖");
+      fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(target), { recursive: true });
+      if (exists) {
+        const temporary = `${target}.${process.pid}.pi.tmp`;
+        fs.writeFileSync(/* turbopackIgnore: true */ temporary, params.content, "utf8");
+        fs.copyFileSync(
+          /* turbopackIgnore: true */ temporary,
+          /* turbopackIgnore: true */ target,
+        );
+        fs.unlinkSync(/* turbopackIgnore: true */ temporary);
+      } else {
+        fs.writeFileSync(/* turbopackIgnore: true */ target, params.content, {
+          encoding: "utf8",
+          flag: "wx",
+        });
+      }
+      return textResult(`桌面文件已${exists ? "更新" : "创建"}：${target}`, {
+        path: target,
+        overwritten: exists,
+        bytes: contentBytes,
+      });
+    },
+  });
+
+  return [listFiles, readFile, search, propose, runCheck, listDesktop, readDesktop, writeDesktop];
+}
+
+async function createSourceRuntime(): Promise<SourceRuntimeEntry> {
+  const workspace = requireSourceAccess();
+  const services = await createPiModelServices();
+  const pi = await loadPiCodingAgent();
+  const { agentDir, authStorage, fingerprint, model, modelRegistry, runtimeProvider } = services;
+  const sourceSkillPath = ensureSourceMaintenanceSkill(agentDir);
+  const settingsManager = pi.SettingsManager.inMemory({
+    defaultProvider: runtimeProvider,
+    defaultModel: model.id,
+  });
+  const resourceLoader = new pi.DefaultResourceLoader({
+    cwd: workspace,
+    agentDir,
+    settingsManager,
+    additionalSkillPaths: [sourceSkillPath],
+    skillsOverride: (current) => ({
+      skills: current.skills.filter((skill) => path.resolve(skill.filePath) === path.resolve(sourceSkillPath)),
+      diagnostics: current.diagnostics,
+    }),
+    noExtensions: true,
+    noSkills: false,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    systemPrompt: SOURCE_SYSTEM_PROMPT,
+  });
+  await resourceLoader.reload();
+  const customTools = createSourceTools(pi);
+  const sessionDirectory = path.join(appStateDir(), "pi-source-sessions");
+  const { session } = await pi.createAgentSession({
+    cwd: workspace,
+    agentDir,
+    authStorage,
+    modelRegistry,
+    model,
+    thinkingLevel: "high",
+    tools: customTools.map((tool) => tool.name),
+    customTools,
+    resourceLoader,
+    settingsManager,
+    sessionManager: pi.SessionManager.continueRecent(workspace, sessionDirectory),
+  });
+  return { session, fingerprint: `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}`, workspace };
+}
+
+async function getSourceRuntime(): Promise<SourceRuntimeEntry> {
+  const workspace = requireSourceAccess();
+  const { fingerprint } = await createPiModelServices();
+  const policyFingerprint = `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}`;
+  const existing = globalForSourcePi.__withyouPiSourceSession;
+  if (existing) {
+    const entry = await existing;
+    if (entry.workspace === workspace && entry.fingerprint === policyFingerprint) return entry;
+    entry.session.dispose();
+    delete globalForSourcePi.__withyouPiSourceSession;
+  }
+  const pending = createSourceRuntime();
+  globalForSourcePi.__withyouPiSourceSession = pending;
+  try {
+    return await pending;
+  } catch (error) {
+    delete globalForSourcePi.__withyouPiSourceSession;
+    throw error;
+  }
+}
+
+function forwardEvent(event: AgentSessionEvent, emit: (event: PiRuntimeEvent) => void): void {
+  if (event.type === "message_update") {
+    const update = event.assistantMessageEvent;
+    if (update.type === "text_delta") emit({ type: "text", text: update.delta });
+    if (update.type === "thinking_delta") emit({ type: "thinking", text: update.delta });
+  } else if (event.type === "tool_execution_start") {
+    emit({
+      type: "tool_start",
+      toolCallId: event.toolCallId,
+      toolName: event.toolName,
+      args: event.args,
+    });
+  } else if (event.type === "tool_execution_end") {
+    emit({
+      type: "tool_end",
+      toolCallId: event.toolCallId,
+      toolName: event.toolName,
+      result: event.result,
+      isError: event.isError,
+    });
+  } else if (event.type === "agent_settled") {
+    emit({ type: "done" });
+  }
+}
+
+export async function promptSourcePi(message: string, emit: (event: PiRuntimeEvent) => void): Promise<void> {
+  requireSourceAccess();
+  const { session } = await getSourceRuntime();
+  if (session.isStreaming) throw new Error("源码 Pi 正在处理上一项任务");
+  const unsubscribe = session.subscribe((event) => forwardEvent(event, emit));
+  try {
+    await session.prompt(message);
+  } finally {
+    unsubscribe();
+  }
+}
+
+export async function abortSourcePi(): Promise<void> {
+  const existing = globalForSourcePi.__withyouPiSourceSession;
+  if (!existing) return;
+  const { session } = await existing;
+  await session.abort();
+}

@@ -1,0 +1,80 @@
+{
+  "_comment": "创作 Agent 的分层提示词文件映射",
+  "agents": {
+    "writer": {
+      "name": "WriterAgent",
+      "system_md": null,
+      "layers": ["agents/writer/hard_rules.md", "agents/writer/exec_guide.md"],
+      "user_presets_dir": "agents/writer/prompts/"
+    },
+    "outline": {
+      "name": "OutlineAgent",
+      "system_md": "agents/outline_agent.md",
+      "layers": [],
+      "user_presets_dir": null
+    },
+    "volume_outline": {
+      "name": "VolumeOutlineAgent",
+      "system_md": null,
+      "layers": ["agents/volume_outline/hard_rules.md", "agents/volume_outline/exec_guide.md"],
+      "user_presets_dir": null
+    },
+    "block_outline": {
+      "name": "BlockOutlineAgent",
+      "system_md": null,
+      "layers": ["agents/block_outline/hard_rules.md", "agents/block_outline/exec_guide.md"],
+      "user_presets_dir": null
+    },
+    "logic_check": {
+      "name": "LogicCheckAgent",
+      "system_md": null,
+      "layers": ["agents/logic_check/hard_rules.md", "agents/logic_check/exec_guide.md"],
+      "user_presets_dir": null
+    },
+    "state_update": {
+      "name": "StateUpdateAgent",
+      "system_md": null,
+      "layers": ["agents/state_update/hard_rules.md", "agents/state_update/exec_guide.md"],
+      "user_presets_dir": null,
+      "workbench_guides": ["agents/trace_patch/workbench_guide.md", "agents/entity_patch/workbench_guide.md"]
+    },
+    "trace_review": {
+      "name": "TraceReviewAgent",
+      "system_md": null,
+      "layers": ["agents/trace_review/hard_rules.md", "agents/trace_review/exec_guide.md"],
+      "user_presets_dir": null
+    },
+    "entity_enrich": {
+      "name": "EntityEnrichAgent",
+      "system_md": null,
+      "layers": ["agents/entity_enrich/hard_rules.md", "agents/entity_enrich/exec_guide.md"],
+      "user_presets_dir": null
+    },
+    "trace_patch_suggest": {
+      "name": "TracePatchSuggestAgent",
+      "system_md": null,
+      "layers": ["agents/trace_patch_suggest/hard_rules.md", "agents/trace_patch_suggest/exec_guide.md"],
+      "user_presets_dir": null
+    },
+    "refine": {
+      "name": "RefineAgent",
+      "system_md": null,
+      "layers": ["agents/refine/hard_rules.md", "agents/refine/exec_guide.md"],
+      "user_presets_dir": "agents/refine/prompts/"
+    }
+  },
+  "single_file_skills": [
+    "agents/outline_draft_agent_skill.md",
+    "agents/outline_draft_brainstorm_skill.md",
+    "agents/outline_draw_skill.md",
+    "agents/outline_section_maintain_skill.md",
+    "agents/outline_stage_block1.md",
+    "agents/outline_stage_characters.md",
+    "agents/outline_stage_cheat.md",
+    "agents/outline_stage_power.md",
+    "agents/outline_stage_romance.md",
+    "agents/outline_stage_volumes.md",
+    "agents/chapter_plan_brainstorm_skill.md",
+    "agents/plot_plan_brainstorm_skill.md"
+  ]
+}

@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>玻璃折射测试 v3</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { min-height: 100vh; background: #111; font-family: system-ui; overflow-x: hidden; }
+  .bg { position: fixed; inset: 0; background: url('bg.jpg') center/cover; }
+  nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; height: 56px;
+    display: flex; align-items: center; justify-content: center; gap: 32px;
+    background: rgba(0,0,0,0.3); backdrop-filter: blur(8px); }
+  nav a { color: white; text-decoration: none; font-size: 14px; font-weight: 500;
+    padding: 8px 16px; border-radius: 8px; cursor: pointer; }
+  nav a:hover { background: rgba(255,255,255,0.1); }
+  .dw { position: relative; display: inline-block; }
+  .dd { position: absolute; top: 100%; left: 50%; transform: translateX(-50%) translateY(8px);
+    width: 300px; border-radius: 16px; opacity: 0; pointer-events: none;
+    transition: opacity 0.25s, transform 0.25s; z-index: 200; }
+  .dw:hover .dd { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+  .dd canvas { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 16px; }
+  .dc { position: relative; z-index: 1; padding: 8px; }
+  .di { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border-radius: 10px; color: white; font-size: 13px; cursor: pointer; }
+  .di:hover { background: rgba(255,255,255,0.08); }
+  .dicon { width: 32px; height: 32px; border-radius: 8px; background: rgba(255,255,255,0.12);
+    display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+  .dl { font-weight: 500; }
+  .ddesc { font-size: 11px; color: rgba(255,255,255,0.5); margin-top: 2px; }
+</style>
+</head>
+<body>
+<div class="bg" id="bgDiv"></div>
+<nav>
+  <div class="dw" id="dw">
+    <a>Tools ▾</a>
+    <div class="dd" id="dd">
+      <canvas id="gc"></canvas>
+      <div class="dc">
+        <div class="di"><div class="dicon">🎨</div><div><div class="dl">主图生成</div><div class="ddesc">AI 生成电商主图</div></div></div>
+        <div class="di"><div class="dicon">🔄</div><div><div class="dl">爆款复刻</div><div class="ddesc">风格迁移复制</div></div></div>
+        <div class="di"><div class="dicon">✨</div><div><div class="dl">产品精修</div><div class="ddesc">专业商业修图</div></div></div>
+        <div class="di"><div class="dicon">📝</div><div><div class="dl">提示词生成</div><div class="ddesc">AI 辅助写提示词</div></div></div>
+      </div>
+    </div>
+  </div>
+  <a>Studio</a><a>Pricing</a><a>About</a>
+</nav>
+
+<script>
+// ===== 核心思路：把背景渲染到离屏 canvas，然后根据下拉位置裁剪 =====
+const bgDiv = document.getElementById('bgDiv');
+const canvas = document.getElementById('gc');
+const gl = canvas.getContext('webgl') || canvas.getContext('webgl2');
+
+// 离屏 canvas — 用来"截图"背景
+const offscreen = document.createElement('canvas');
+const offCtx = offscreen.getContext('2d');
+const bgImg = new Image();
+bgImg.crossOrigin = 'anonymous';
+bgImg.src = 'bg.jpg';
+let bgLoaded = false;
+bgImg.onload = () => {
+  offscreen.width = window.innerWidth;
+  offscreen.height = window.innerHeight;
+  // 画背景 (cover 模式)
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const iw = bgImg.naturalWidth, ih = bgImg.naturalHeight;
+  const scale = Math.max(vw / iw, vh / ih);
+  const sw = iw * scale, sh = ih * scale;
+  const sx = (vw - sw) / 2, sy = (vh - sh) / 2;
+  offCtx.drawImage(bgImg, sx, sy, sw, sh);
+  bgLoaded = true;
+  updateTexture();
+};
+
+// WebGL 纹理
+let tex = null;
+function updateTexture() {
+  if (!bgLoaded) return;
+  if (tex) gl.deleteTexture(tex);
+  tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, offscreen);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+}
+
+// Shader — 从全屏背景纹理中裁剪下拉区域
+const vs = `attribute vec2 a_pos; varying vec2 v_uv;
+void main(){ v_uv=a_pos*0.5+0.5; v_uv.y=1.0-v_uv.y; gl_Position=vec4(a_pos,0,1); }`;
+
+const fs = `precision highp float;
+varying vec2 v_uv;
+uniform vec2 u_res;
+uniform vec2 u_cropStart;  // 下拉左上角在屏幕中的归一化位置
+uniform vec2 u_cropSize;   // 下拉尺寸在屏幕中的归一化比例
+uniform vec2 u_mouse;      // 鼠标在下拉内的归一化位置
+uniform sampler2D u_bg;
+
+void main(){
+  vec2 uv = v_uv;
+
+  // 圆角矩形 SDF
+  vec2 b = vec2(0.46);
+  float r = 0.06;
+  vec2 q = abs(uv - 0.5) - b + vec2(r);
+  float d = length(max(q, 0.0)) - r;
+
+  if(d > 0.0) { gl_FragColor = vec4(0,0,0,0); return; }
+
+  // 法线
+  float e = 0.002;
+  float dx = length(max(abs(uv-vec2(e,0))-0.5-b+vec2(r),0.0))-r
+            -length(max(abs(uv-vec2(-e,0))-0.5-b+vec2(r),0.0))+r;
+  float dy = length(max(abs(uv-vec2(0,e))-0.5-b+vec2(r),0.0))-r
+            -length(max(abs(uv-vec2(0,-e))-0.5-b+vec2(r),0.0))+r;
+  vec2 N = normalize(vec2(dx, dy) + 1e-6);
+
+  // 斜率 — squircle dome
+  float distFromCenter = length(uv - 0.5) / length(b);
+  float x = 1.0 - clamp(distFromCenter, 0.0, 1.0);
+  float slope = pow(1.0-x, 3.0) / pow(max(1.0-pow(1.0-x, 4.0), 0.001), 0.75);
+
+  // Snell's law
+  float tI = atan(slope);
+  float tT = asin(sin(tI) / 1.5);
+  float bend = sin(tI - tT);
+
+  // 鼠标增强
+  float md = length(uv - u_mouse);
+  float mi = smoothstep(0.5, 0.0, md) * 0.3;
+
+  // 位移
+  vec2 disp = N * bend * (0.4 + mi);
+
+  // 关键：把下拉内的 UV 映射到全屏背景的正确位置
+  vec2 screenPos = u_cropStart + (uv + disp) * u_cropSize;
+  // 翻转 Y
+  screenPos.y = 1.0 - screenPos.y;
+
+  vec4 col = texture2D(u_bg, screenPos);
+
+  // 边缘高光
+  float fresnel = pow(1.0 - x, 2.5);
+  col.rgb += fresnel * 0.1;
+
+  // 玻璃 tint
+  col.rgb = mix(col.rgb, vec3(0.92, 0.95, 1.0), 0.04);
+
+  float alpha = 1.0 - smoothstep(-0.01, 0.005, d);
+  gl_FragColor = vec4(col.rgb, alpha * 0.92);
+}`;
+
+function mkShader(t, s) { const sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) { console.error(gl.getShaderInfoLog(sh)); return null; } return sh; }
+
+const p = gl.createProgram();
+gl.attachShader(p, mkShader(gl.VERTEX_SHADER, vs));
+gl.attachShader(p, mkShader(gl.FRAGMENT_SHADER, fs));
+gl.linkProgram(p); gl.useProgram(p);
+
+const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+const aP = gl.getAttribLocation(p, 'a_pos'); gl.enableVertexAttribArray(aP); gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+
+const uR = gl.getUniformLocation(p, 'u_res');
+const uCS = gl.getUniformLocation(p, 'u_cropStart');
+const uCZ = gl.getUniformLocation(p, 'u_cropSize');
+const uM = gl.getUniformLocation(p, 'u_mouse');
+const uB = gl.getUniformLocation(p, 'u_bg');
+
+let mx = 0.5, my = 0.5;
+canvas.parentElement.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  mx = (e.clientX - r.left) / r.width;
+  my = 1 - (e.clientY - r.top) / r.height;
+});
+
+function resize() {
+  const r = canvas.parentElement.getBoundingClientRect();
+  const d = devicePixelRatio || 1;
+  canvas.width = r.width * d;
+  canvas.height = r.height * d;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+
+function render() {
+  if (!bgLoaded) { requestAnimationFrame(render); return; }
+  resize();
+
+  // 计算下拉在屏幕中的位置
+  const dd = document.getElementById('dd');
+  const rect = dd.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const cropStartX = rect.left / vw;
+  const cropStartY = rect.top / vh;
+  const cropW = rect.width / vw;
+  const cropH = rect.height / vh;
+
+  gl.uniform2f(uR, canvas.width, canvas.height);
+  gl.uniform2f(uCS, cropStartX, cropStartY);
+  gl.uniform2f(uCZ, cropW, cropH);
+  gl.uniform2f(uM, mx, my);
+  gl.uniform1i(uB, 0);
+
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(render);
+}
+render();
+
+// 窗口大小变化时重绘背景
+window.addEventListener('resize', () => {
+  if (!bgLoaded) return;
+  offscreen.width = window.innerWidth;
+  offscreen.height = window.innerHeight;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const iw = bgImg.naturalWidth, ih = bgImg.naturalHeight;
+  const scale = Math.max(vw / iw, vh / ih);
+  offCtx.drawImage(bgImg, (vw - iw*scale)/2, (vh - ih*scale)/2, iw*scale, ih*scale);
+  updateTexture();
+});
+</script>
+</body>
+</html>

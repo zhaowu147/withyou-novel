@@ -1,0 +1,6 @@
+@echo off
+echo Clearing ports...
+netstat -ano | findstr :"3000" | findstr LISTENING > nul && (for /f "tokens=5" %%a in ('netstat -ano ^| findstr :"3000"') do taskkill /PID %%a /f > nul 2>&1)
+timeout /t 2 /nobreak > nul
+echo Starting Next.js dev server...
+node node_modules/next/dist/bin/next dev > dev-server.log 2>&1

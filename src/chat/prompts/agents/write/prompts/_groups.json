@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "id": "grp_style",
+      "name": "文风",
+      "order": 10,
+      "builtin": true,
+      "collapsed": true
+    },
+    {
+      "id": "grp_persona",
+      "name": "人设",
+      "order": 15,
+      "builtin": true,
+      "collapsed": true
+    },
+    {
+      "id": "grp_plot",
+      "name": "情节与节奏",
+      "order": 20,
+      "builtin": true,
+      "collapsed": true
+    },
+    {
+      "id": "grp_world",
+      "name": "世界观与设定",
+      "order": 30,
+      "builtin": true,
+      "collapsed": true
+    },
+    {
+      "id": "grp_scene",
+      "name": "对话与场景",
+      "order": 40,
+      "builtin": true,
+      "collapsed": true
+    },
+    {
+      "id": "grp_deai",
+      "name": "去AI化",
+      "order": 50,
+      "builtin": true,
+      "collapsed": true
+    },
+    {
+      "id": "grp_rules",
+      "name": "规则与禁忌",
+      "order": 60,
+      "builtin": true,
+      "collapsed": true
+    }
+  ],
+  "assignments": {
+    "文风控制提示词.md": "grp_style",
+    "第一人称代入.md": "grp_style",
+    "文风-短句网感.md": "grp_style",
+    "人设提示词-老周.md": "grp_persona",
+    "人设-毒舌编辑.md": "grp_persona",
+    "人设-热血爽文写手.md": "grp_persona",
+    "人设-女频情感写手.md": "grp_persona",
+    "人设-悬疑信息写手.md": "grp_persona",
+    "快节奏爽文.md": "grp_plot",
+    "章末钩子.md": "grp_plot",
+    "爽感控制提示词.md": "grp_plot",
+    "情节-双线并进.md": "grp_plot",
+    "世界观释出.md": "grp_world",
+    "设定-规则可视化.md": "grp_world",
+    "设定-势力伏笔.md": "grp_world",
+    "设定-金手指边界.md": "grp_world",
+    "对话与动作.md": "grp_scene",
+    "环境描写提示词.md": "grp_scene",
+    "场景-五感切入.md": "grp_scene",
+    "对话-潜台词交锋.md": "grp_scene",
+    "去除AI味道.md": "grp_deai",
+    "去AI-句式替换表.md": "grp_deai",
+    "去AI-节奏人工化.md": "grp_deai",
+    "规则提示词.md": "grp_rules",
+    "禁忌-视角信息.md": "grp_rules",
+    "禁忌-情感桥段.md": "grp_rules"
+  },
+  "updated_at": "2026-06-14T10:14:38.767639"
+}

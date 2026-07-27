@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>故事阶段图谱 · 可编辑原型</title>
+  <style>
+    :root{--ink:#17211e;--muted:#71817a;--line:#dce5df;--paper:#f7faf8;--jade:#28725d;--gold:#bf853a;--violet:#7567b2;--red:#b8565d;--blue:#407ba0}*{box-sizing:border-box}body{margin:0;min-width:1050px;font:14px/1.45 ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif;color:var(--ink);background:#eef3ef}button,input,textarea,select{font:inherit}button{cursor:pointer;border:1px solid var(--line);border-radius:9px;background:white;padding:8px 11px;color:var(--ink)}button:hover,button.active{background:var(--ink);border-color:var(--ink);color:#fff}.top{height:62px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;background:#fffffff0;border-bottom:1px solid var(--line)}.brand{font-size:17px;font-weight:750;display:flex;gap:10px;align-items:center}.mark{width:27px;height:27px;border-radius:50%;background:radial-gradient(circle at 35% 28%,#c4dfd3 0 7%,#408572 23%,#175143 61%,#102e27);box-shadow:inset -6px -6px 12px #08231d55,4px 6px 15px #215e4d30}.muted{color:var(--muted);font-size:12px}.layout{height:calc(100vh - 62px);min-height:650px;display:grid;grid-template-columns:250px 1fr 288px;gap:1px;background:var(--line)}aside,.inspector{background:#fbfcfb;padding:20px}.eyebrow{color:var(--muted);font-size:10px;font-weight:750;letter-spacing:.12em}.side-title{font-size:18px;font-weight:750;margin:5px 0}.side-desc{font-size:12px;color:var(--muted);margin:0 0 17px}.stage-list{display:grid;gap:7px}.stage-list button{text-align:left;border:0;background:transparent;padding:10px}.stage-list button.active{background:#e2f0e9;color:#1f5b4c}.stage-list b{display:block;font-size:13px}.stage-list small{display:block;color:inherit;opacity:.65;margin-top:2px}.rules{position:absolute;bottom:20px;width:210px;border-top:1px solid var(--line);padding-top:12px;color:var(--muted);font-size:11px}.rules b{color:var(--ink)}.work{position:relative;overflow:hidden;background:radial-gradient(circle at 50% 50%,#fff 0,#f7faf8 52%,#ebf2ed 100%)}.toolbar{position:absolute;z-index:10;left:18px;right:18px;top:17px;display:flex;justify-content:space-between}.crumb{background:#ffffffdc;border:1px solid var(--line);box-shadow:0 7px 20px #1c41310c;border-radius:10px;padding:8px 10px;font-size:12px}.actions{display:flex;gap:6px}.actions button{font-size:12px}.atlas{position:absolute;inset:0}.atlas-title{position:absolute;top:100px;left:50%;transform:translateX(-50%);text-align:center}.atlas-title h1{font-size:23px;margin:3px}.atlas-title p{margin:0;color:var(--muted);font-size:12px}.path{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.path path{fill:none;stroke:#9caea4;stroke-width:1.5;stroke-dasharray:5 6}.path polygon{fill:#9caea4}.sphere{position:absolute;transform:translate(-50%,-50%);width:175px;height:175px;border-radius:50%;cursor:pointer;transition:.25s;display:flex;align-items:center;justify-content:center;text-align:center;color:white;background:radial-gradient(circle at 34% 28%,#d3eee1 0 4%,var(--c) 21%,color-mix(in srgb,var(--c) 75%,#102c25) 58%,#112b25 100%);box-shadow:inset -17px -18px 26px #071c185e,inset 12px 10px 22px #ffffff22,0 19px 32px color-mix(in srgb,var(--c) 24%,transparent)}.sphere:hover{scale:1.07}.sphere:after{content:"";position:absolute;inset:-9px;border:1px solid color-mix(in srgb,var(--c) 32%,transparent);border-radius:50%;animation:orbit 4s linear infinite}.sphere .order{font-size:10px;letter-spacing:.14em;opacity:.76}.sphere b{display:block;font-size:17px;margin:4px}.sphere small{font-size:11px;opacity:.8}@keyframes orbit{to{transform:rotate(360deg) scale(1.07)}}.sphere.locked{filter:saturate(.4);opacity:.68}.stage-editor{display:none;position:absolute;inset:0}.stage-editor.open{display:block}.field{position:absolute;left:5%;top:13%;width:90%;height:76%;border-radius:50%;border:1px dashed #aec7bc;background:radial-gradient(ellipse,#e7f3ed88 0,#ffffff11 66%);pointer-events:none}.field-label{position:absolute;left:50%;top:15%;transform:translateX(-50%);color:#6a8378;font-size:11px;letter-spacing:.12em}.editor-svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.editor-svg path{fill:none;stroke:#92a99e;stroke-width:1.6}.editor-svg path.hot{stroke:var(--red);stroke-width:2.5}.editor-svg path.event{stroke:var(--gold);stroke-width:2;stroke-dasharray:5 4}.card{position:absolute;transform:translate(-50%,-50%);z-index:3;width:139px;padding:9px 10px;background:#fff;border:1px solid #dce5df;border-radius:12px;box-shadow:0 10px 22px #29463512;cursor:grab;user-select:none}.card.dragging{cursor:grabbing;box-shadow:0 14px 30px #29463527}.card.selected{border:2px solid var(--c);box-shadow:0 12px 28px color-mix(in srgb,var(--c) 20%,transparent)}.card i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--c);margin-right:5px}.card .kind{font-size:10px;color:var(--muted)}.card b{display:block;margin-top:4px}.card small{display:block;color:var(--muted);font-size:10px;margin-top:2px}.event-card{background:#fffaf1;border-color:#ead7b3}.event-card .kind{color:#9b702e}.mini-note{position:absolute;bottom:17px;left:20px;color:#77897f;font-size:11px}.inspector h2{font-size:20px;margin:5px 0}.chip{display:inline-block;color:#276451;background:#e4f1eb;padding:3px 8px;border-radius:999px;font-size:11px;margin:5px 0 12px}.inspector label{display:block;font-size:11px;color:var(--muted);margin:11px 0 4px}.inspector input,.inspector textarea,.inspector select{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fff;color:var(--ink)}.inspector textarea{height:90px;resize:vertical}.save{width:100%;margin-top:12px;background:var(--jade);border-color:var(--jade);color:white}.sync{border-top:1px solid var(--line);margin-top:18px;padding-top:13px}.sync h3{font-size:12px;margin:0 0 7px}.sync p{font-size:11px;color:var(--muted);margin:0 0 8px}.status{font-size:11px;color:#33715c;min-height:17px}.empty{padding:18px 0;color:var(--muted);font-size:13px}@media(max-width:760px){body{min-width:0}.top{padding:0 12px}.top .muted{display:none}.layout{display:block;min-height:560px}.layout>aside,.inspector{display:none}.work{height:100%}.sphere{width:120px;height:120px}.sphere b{font-size:13px}.sphere small{font-size:9px}.atlas-title{top:74px}.atlas-title h1{font-size:17px}.atlas-title p{font-size:10px}.toolbar{top:10px;left:10px;right:10px}.actions button:not(#back){display:none}.card{scale:.68}.field-label{top:18%}.mini-note{font-size:9px}}
+      .world{position:absolute;inset:0;transform-origin:0 0;will-change:transform}.handle{position:absolute;width:12px;height:12px;border:2px solid #fff;border-radius:50%;background:var(--c);box-shadow:0 1px 5px #17211e55;opacity:0;transition:.15s;z-index:5;cursor:crosshair}.card:hover .handle,.card.selected .handle{opacity:1}.handle.top{left:50%;top:-7px;transform:translateX(-50%)}.handle.right{right:-7px;top:50%;transform:translateY(-50%)}.handle.bottom{left:50%;bottom:-7px;transform:translateX(-50%)}.handle.left{left:-7px;top:50%;transform:translateY(-50%)}#linkPreview{fill:none;stroke:#28725d;stroke-width:2.5;stroke-dasharray:5 4;pointer-events:none}.work.panning,.work.panning *{cursor:grabbing!important}
+  </style>
+</head>
+<body>
+  <header class="top"><div class="brand"><i class="mark"></i>故事阶段图谱 <span class="muted">/ 苍梧纪事</span></div><div class="muted">可编辑叙事工作台 · 每部作品最多 10 个阶段</div></header>
+  <main class="layout"><aside><div class="eyebrow">STORY STAGES</div><div class="side-title">叙事阶段</div><p class="side-desc">每一个球体是一段可独立构思、编辑和回看的故事世界。</p><div class="stage-list" id="stageList"></div><div class="rules"><b>编辑规则</b><br />阶段内的关系和事件可直接编辑；确认后的事实才进入项目知识。</div></aside>
+  <section class="work"><div class="toolbar"><div class="crumb" id="crumb">阶段总览 · 4 / 10</div><div class="actions"><button id="back" style="display:none">← 返回总览</button><button id="connectMode" style="display:none">↗ 绘制关系</button><button id="addNode" style="display:none">＋ 添加节点</button><button id="saveGraph">保存图谱</button></div></div>
+    <div class="atlas" id="atlas"><div class="atlas-title"><div class="eyebrow">NARRATIVE ATLAS</div><h1>故事沿着阶段向前推进</h1><p>点击一个球体，进入该阶段的可编辑人物、势力与事件工作台。</p></div><svg class="path" viewBox="0 0 1000 700" preserveAspectRatio="none"><path d="M165 430 C315 310 360 340 480 390 S700 500 830 315"/><polygon points="823,311 845,306 834,326"/><path d="M480 390 C605 210 690 202 830 315"/><polygon points="823,311 845,306 834,326"/></svg><div class="sphere" data-stage="0" style="--c:#337a65;left:18%;top:61%"><div><span class="order">阶段 01</span><b>雾隐城</b><small>初入江湖 · 12 事件</small></div></div><div class="sphere" data-stage="1" style="--c:#b67c37;left:48%;top:54%"><div><span class="order">阶段 02</span><b>北境关</b><small>阵营冲突 · 18 事件</small></div></div><div class="sphere" data-stage="2" style="--c:#7668aa;left:83%;top:43%"><div><span class="order">阶段 03</span><b>玄渊秘境</b><small>世界扩张 · 待构思</small></div></div><div class="sphere locked" data-stage="3" style="--c:#657b83;left:73%;top:76%"><div><span class="order">阶段 04</span><b>下一阶段</b><small>空白画布</small></div></div></div>
+    <div class="stage-editor" id="editor"><div class="world" id="world"><div class="field"></div><div class="field-label" id="fieldLabel">阶段 01 · 雾隐城</div><svg class="editor-svg" viewBox="0 0 1000 700" preserveAspectRatio="none"><g id="edgeLayer"></g><path id="linkPreview"></path></svg></div><div class="mini-note">将鼠标移至节点边缘的小圆点，拖到另一个节点建立关系；拖动画布空白处可平移，滚轮缩放 · 单节点上限 200 条</div></div>
+  </section><aside class="inspector"><div class="eyebrow">NODE INSPECTOR</div><div id="inspectEmpty" class="empty">在阶段内选择一个节点，或点击一条连线进行编辑。</div><div id="inspectForm" style="display:none"><h2 id="selectedTitle">沈砚</h2><span class="chip" id="selectedKind">人物 · 已确认</span><label>名称</label><input id="nameInput" /><label>类型</label><select id="typeInput"><option>人物</option><option>势力</option><option>地点</option><option>关键事件</option></select><label>事实描述</label><textarea id="descInput"></textarea><label>知识状态</label><select id="stateInput"><option>已确认：可供 Agent 使用</option><option>草稿：仅图谱可见</option></select><button class="save" id="saveNode">保存节点</button><div class="status" id="status"></div><div class="sync"><h3>同步边界</h3><p>保存先写入图谱文件；只有“已确认”的事实才会在下一次任务中按当前阶段提供给 Agent。</p><button id="confirmKnowledge">确认并同步项目知识</button></div></div><div id="edgeForm" style="display:none"><h2 id="edgeTitle">人物关系</h2><span class="chip" id="edgeCount">连接数 0 / 200</span><label>关系名称</label><input id="relationInput" placeholder="例如：师徒、敌对、效忠"/><label>起点</label><select id="edgeSource"></select><label>终点</label><select id="edgeTarget"></select><label>关系类型</label><select id="edgeType"><option value="relation">普通关联</option><option value="ally">同盟 / 亲近</option><option value="conflict">冲突 / 敌对</option><option value="control">隶属 / 支配</option></select><button class="save" id="saveEdge">保存连线</button><button id="deleteEdge" style="width:100%;margin-top:8px">删除连线</button><div class="status" id="edgeStatus"></div></div></aside></main>
+  <script>
+    const stages=[{name:'雾隐城',sub:'初入江湖',color:'#337a65'},{name:'北境关',sub:'阵营冲突',color:'#b67c37'},{name:'玄渊秘境',sub:'世界扩张',color:'#7668aa'},{name:'下一阶段',sub:'空白画布',color:'#657b83'}];
+    const nodes=[{id:'hero',name:'沈砚',type:'人物',desc:'主角，持有玄渊残卷；尚未选择所属阵营。',state:'已确认',x:51,y:52,c:'#28725d',role:'主角 · 散修'},{id:'ally',name:'苏绾',type:'人物',desc:'药坊传人，与沈砚共同经历夜袭。',state:'已确认',x:20,y:34,c:'#bf853a',role:'同伴 · 药师'},{id:'rival',name:'顾临川',type:'人物',desc:'北境关巡使，追查残卷的剑修。',state:'草稿',x:81,y:34,c:'#b8565d',role:'对手 · 剑修'},{id:'faction1',name:'雾隐药坊',type:'势力',desc:'地方中立势力，提供庇护与情报。',state:'已确认',x:23,y:76,c:'#7567b2',role:'势力 · 中立'},{id:'faction2',name:'北境关',type:'势力',desc:'掌控北境通道的军政势力。',state:'已确认',x:80,y:76,c:'#407ba0',role:'势力 · 秩序'},{id:'event',name:'雾隐城夜袭',type:'关键事件',desc:'第 18 章：敌对双方短暂合作，关系转为互相试探。',state:'已确认',x:54,y:86,c:'#bf853a',role:'事件 · 关系转折'}];
+    let activeStage=0,selected=null,drag=null;const $=s=>document.querySelector(s);const list=$('#stageList'),editor=$('#editor'),atlas=$('#atlas'),crumb=$('#crumb');
+    function renderList(){list.innerHTML=stages.map((s,i)=>`<button data-stage="${i}" class="${i===activeStage?'active':''}"><b>${String(i+1).padStart(2,'0')} ${s.name}</b><small>${s.sub}</small></button>`).join('');list.querySelectorAll('button').forEach(b=>b.onclick=()=>openStage(+b.dataset.stage));}
+    function card(n){const el=document.createElement('article');el.className=`card${n.type==='关键事件'?' event-card':''}`;el.dataset.id=n.id;el.style.cssText=`--c:${n.c};left:${n.x}%;top:${n.y}%`;el.innerHTML=`<span class="handle top" data-side="top"></span><span class="handle right" data-side="right"></span><span class="handle bottom" data-side="bottom"></span><span class="handle left" data-side="left"></span><div class="kind"><i></i>${n.role}</div><b>${n.name}</b><small>${n.state==='已确认'?'已确认项目知识':'草稿 · 未同步'}</small>`;el.onpointerdown=e=>startDrag(e,n,el);el.onclick=e=>{if(!drag)select(n);e.stopPropagation()};document.getElementById('world').append(el)}
+    function renderEditor(){document.getElementById('world').querySelectorAll('.card').forEach(e=>e.remove());nodes.forEach(card);$('#fieldLabel').textContent=`阶段 ${String(activeStage+1).padStart(2,'0')} · ${stages[activeStage].name}`;}
+    function openStage(i){activeStage=i;renderList();atlas.style.display='none';editor.classList.add('open');$('#back').style.display='inline-block';$('#addNode').style.display='inline-block';crumb.textContent=`阶段 ${String(i+1).padStart(2,'0')} · ${stages[i].name} · 可编辑工作台`;renderEditor();selected=null;$('#inspectForm').style.display='none';$('#inspectEmpty').style.display='block';}
+    function back(){atlas.style.display='block';editor.classList.remove('open');$('#back').style.display='none';$('#addNode').style.display='none';crumb.textContent='阶段总览 · 4 / 10';renderList();}
+    function select(n){selected=n;editor.querySelectorAll('.card').forEach(e=>e.classList.toggle('selected',e.dataset.id===n.id));$('#inspectEmpty').style.display='none';$('#inspectForm').style.display='block';$('#selectedTitle').textContent=n.name;$('#selectedKind').textContent=`${n.type} · ${n.state}`;$('#nameInput').value=n.name;$('#typeInput').value=n.type;$('#descInput').value=n.desc;$('#stateInput').value=n.state==='已确认'?'已确认：可供 Agent 使用':'草稿：仅图谱可见';$('#status').textContent='';}
+    function startDrag(e,n,el){if(e.target.closest('.handle'))return;drag={n,el};el.classList.add('dragging');el.setPointerCapture(e.pointerId)}editor.onpointermove=e=>{if(!drag)return;const r=document.getElementById('world').getBoundingClientRect();drag.n.x=Math.max(8,Math.min(92,(e.clientX-r.left)/r.width*100));drag.n.y=Math.max(19,Math.min(91,(e.clientY-r.top)/r.height*100));drag.el.style.left=`${drag.n.x}%`;drag.el.style.top=`${drag.n.y}%`};editor.onpointerup=e=>{if(!drag)return;drag.el.classList.remove('dragging');drag=null};
+    document.querySelectorAll('.sphere').forEach(s=>s.onclick=()=>openStage(+s.dataset.stage));$('#back').onclick=back;$('#saveNode').onclick=()=>{if(!selected)return;selected.name=$('#nameInput').value||'未命名节点';selected.type=$('#typeInput').value;selected.desc=$('#descInput').value;selected.state=$('#stateInput').value.startsWith('已确认')?'已确认':'草稿';select(selected);renderEditor();$('#status').textContent='已保存到图谱草稿 · 尚未写入项目知识';};$('#confirmKnowledge').onclick=()=>{if(!selected)return;selected.state='已确认';select(selected);renderEditor();$('#status').textContent='已确认：下一次当前作品任务将读取该事实';};$('#addNode').onclick=()=>{const n={id:`node${Date.now()}`,name:'新节点',type:'人物',desc:'请补充这个节点的事实。',state:'草稿',x:50,y:67,c:'#657b83',role:'孤立节点 · 0 / 200 关系'};nodes.push(n);renderEditor();select(n)};$('#saveGraph').onclick=()=>{const old=$('#saveGraph').textContent;$('#saveGraph').textContent='已保存 ✓';setTimeout(()=>$('#saveGraph').textContent=old,1400)};renderList();
+  </script>
+  <script>
+    /* 原型的连线操作；正式版由 React Flow 的 handles / reconnect 在服务端上限校验下完成。 */
+    (() => {
+      const MAX_EDGES_PER_NODE = 200;
+      const edges = [
+        { id:'edge_hero_ally', source:'hero', target:'ally', relation:'并肩同行', type:'ally' },
+        { id:'edge_hero_rival', source:'hero', target:'rival', relation:'追查残卷', type:'conflict' },
+        { id:'edge_hero_faction1', source:'hero', target:'faction1', relation:'受其庇护', type:'relation' },
+        { id:'edge_hero_faction2', source:'hero', target:'faction2', relation:'被其追查', type:'conflict' },
+        { id:'edge_hero_event', source:'hero', target:'event', relation:'参与事件', type:'relation' },
+      ];
+      let drawing = false, sourceNodeId = null, selectedEdge = null, handleLink = null;
+      const edgeLayer = document.getElementById('edgeLayer');
+      const world = document.getElementById('world');
+      const linkPreview = document.getElementById('linkPreview');
+      const connectButton = document.getElementById('connectMode');
+      const edgeForm = document.getElementById('edgeForm');
+      const nodeForm = document.getElementById('inspectForm');
+      const emptyForm = document.getElementById('inspectEmpty');
+      const nodeById = id => nodes.find(node => node.id === id);
+      const degree = id => edges.filter(edge => edge.source === id || edge.target === id).length;
+      const isHot = edge => edge.type === 'conflict';
+      const curvedPath = edge => {
+        const a = nodeById(edge.source), b = nodeById(edge.target);
+        if (!a || !b) return '';
+        const x1 = a.x * 10, y1 = a.y * 7, x2 = b.x * 10, y2 = b.y * 7;
+        const bend = (edge.source.charCodeAt(0) + edge.target.charCodeAt(0)) % 2 ? -34 : 34;
+        return { d:`M ${x1} ${y1} Q ${(x1+x2)/2 + bend} ${(y1+y2)/2 - bend} ${x2} ${y2}`, x:(x1+x2)/2 + bend/2, y:(y1+y2)/2 - bend/2 };
+      };
+      function renderEdges() {
+        edgeLayer.innerHTML = edges.map(edge => {
+          const p = curvedPath(edge); if (!p) return '';
+          const color = edge.type === 'conflict' ? '#b8565d' : edge.type === 'ally' ? '#bf853a' : '#8ba298';
+          return `<g data-edge="${edge.id}" style="cursor:pointer"><path d="${p.d}" style="stroke:${color};stroke-width:${selectedEdge?.id===edge.id?4:2};fill:none;pointer-events:stroke"/><text x="${p.x}" y="${p.y}" text-anchor="middle" fill="${color}" style="font:11px ui-sans-serif;pointer-events:none;paint-order:stroke;stroke:#fff;stroke-width:4px">${edge.relation}</text></g>`;
+        }).join('');
+        edgeLayer.querySelectorAll('[data-edge]').forEach(group => group.addEventListener('click', event => {
+          event.stopPropagation(); selectEdge(edges.find(edge => edge.id === group.dataset.edge));
+        }));
+        editor.querySelectorAll('.card').forEach(card => {
+          const node = nodeById(card.dataset.id);
+          card.querySelectorAll('.handle').forEach(handle => {
+            handle.onpointerdown = event => beginHandleLink(event, node, handle.dataset.side);
+          });
+          card.onclick = event => {
+            event.stopPropagation();
+            select(node);
+          };
+        });
+      }
+      function nodePoint(node, side) {
+        const x = node.x * 10, y = node.y * 7;
+        if (side === 'left') return { x:x - 72, y };
+        if (side === 'right') return { x:x + 72, y };
+        if (side === 'top') return { x, y:y - 32 };
+        return { x, y:y + 32 };
+      }
+      function previewPoint(event) {
+        const rect = world.getBoundingClientRect();
+        return { x:(event.clientX - rect.left) / rect.width * 1000, y:(event.clientY - rect.top) / rect.height * 700 };
+      }
+      function beginHandleLink(event, node, side) {
+        event.preventDefault(); event.stopPropagation();
+        const start = nodePoint(node, side); handleLink = { sourceId:node.id, start };
+        linkPreview.setAttribute('d', `M ${start.x} ${start.y} L ${start.x} ${start.y}`);
+        document.getElementById('edgeStatus').textContent = `从「${node.name}」拖动到目标节点即可建立关系。`;
+        const move = moveEvent => {
+          const end = previewPoint(moveEvent);
+          linkPreview.setAttribute('d', `M ${start.x} ${start.y} Q ${(start.x + end.x) / 2} ${(start.y + end.y) / 2 - 30} ${end.x} ${end.y}`);
+        };
+        const finish = finishEvent => {
+          document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', finish);
+          linkPreview.setAttribute('d', '');
+          const targetCard = document.elementFromPoint(finishEvent.clientX, finishEvent.clientY)?.closest('.card');
+          const target = targetCard ? nodeById(targetCard.dataset.id) : null;
+          const source = nodeById(handleLink?.sourceId);
+          handleLink = null;
+          if (!source || !target || source.id === target.id) return;
+          if (degree(source.id) >= MAX_EDGES_PER_NODE || degree(target.id) >= MAX_EDGES_PER_NODE) {
+            document.getElementById('edgeStatus').textContent = `连接被阻止：单节点最多 ${MAX_EDGES_PER_NODE} 条直接关系。`; return;
+          }
+          const edge = { id:`edge_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, source:source.id, target:target.id, relation:'新关系', type:'relation' };
+          edges.push(edge); selectEdge(edge); document.getElementById('edgeStatus').textContent = '关系已建立：可在此修改名称、类型或起终点。';
+        };
+        document.addEventListener('pointermove', move); document.addEventListener('pointerup', finish, { once:true });
+      }
+      function updateNodeLimit(node) {
+        document.getElementById('edgeCount').textContent = `连接数 ${degree(node.id)} / ${MAX_EDGES_PER_NODE}`;
+      }
+      function selectEdge(edge) {
+        if (!edge) return;
+        selectedEdge = edge; drawing = false; sourceNodeId = null;
+        connectButton.classList.remove('active'); connectButton.textContent = '↗ 绘制关系';
+        emptyForm.style.display = 'none'; nodeForm.style.display = 'none'; edgeForm.style.display = 'block';
+        document.getElementById('edgeTitle').textContent = `${nodeById(edge.source)?.name || '?'} ↔ ${nodeById(edge.target)?.name || '?'}`;
+        document.getElementById('relationInput').value = edge.relation;
+        document.getElementById('edgeType').value = edge.type;
+        const options = nodes.map(node => `<option value="${node.id}">${node.name}</option>`).join('');
+        document.getElementById('edgeSource').innerHTML = options; document.getElementById('edgeTarget').innerHTML = options;
+        document.getElementById('edgeSource').value = edge.source; document.getElementById('edgeTarget').value = edge.target;
+        updateNodeLimit(nodeById(edge.source)); document.getElementById('edgeStatus').textContent = '点击保存后更新这条关系。'; renderEdges();
+      }
+      function chooseEndpoint(node) {
+        if (!sourceNodeId) {
+          sourceNodeId = node.id; document.getElementById('edgeStatus').textContent = `已选择「${node.name}」，请再选择关系终点。`; select(node); return;
+        }
+        if (sourceNodeId === node.id) { document.getElementById('edgeStatus').textContent = '起点与终点不能相同。'; return; }
+        const source = nodeById(sourceNodeId);
+        if (degree(source.id) >= MAX_EDGES_PER_NODE || degree(node.id) >= MAX_EDGES_PER_NODE) {
+          document.getElementById('edgeStatus').textContent = `连接被阻止：单节点最多 ${MAX_EDGES_PER_NODE} 条关系。`; return;
+        }
+        const edge = { id:`edge_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, source:sourceNodeId, target:node.id, relation:'新关系', type:'relation' };
+        edges.push(edge); renderEdges(); select(source);
+        document.getElementById('edgeStatus').textContent = `已建立「${source.name} → ${node.name}」；可继续选择其他终点，或点击空白处更换起点。`;
+      }
+      const originalRender = renderEditor;
+      renderEditor = () => { originalRender(); renderEdges(); };
+      const originalOpen = openStage;
+      openStage = (index) => { originalOpen(index); connectButton.style.display = 'none'; drawing = false; sourceNodeId = null; renderEdges(); };
+      const originalBack = back;
+      back = () => { drawing = false; sourceNodeId = null; connectButton.style.display = 'none'; originalBack(); };
+      connectButton.onclick = () => {
+        if (!drawing) { drawing = true; sourceNodeId = null; selectedEdge = null; }
+        else if (sourceNodeId) { sourceNodeId = null; }
+        else { drawing = false; }
+        connectButton.classList.toggle('active', drawing); connectButton.textContent = drawing ? '结束绘制' : '↗ 绘制关系';
+        document.getElementById('edgeStatus').textContent = drawing ? '请选择关系起点；选定后可连续连接多个终点。' : ''; renderEdges();
+      };
+      document.getElementById('saveEdge').onclick = () => {
+        if (!selectedEdge) return;
+        const source = document.getElementById('edgeSource').value, target = document.getElementById('edgeTarget').value;
+        if (!source || !target || source === target) { document.getElementById('edgeStatus').textContent = '请选择两个不同节点。'; return; }
+        const projected = new Map([[source, degree(source)], [target, degree(target)]]);
+        if (source !== selectedEdge.source) projected.set(source, (projected.get(source) || 0) + 1);
+        if (target !== selectedEdge.target) projected.set(target, (projected.get(target) || 0) + 1);
+        if ([...projected.values()].some(count => count > MAX_EDGES_PER_NODE)) { document.getElementById('edgeStatus').textContent = `保存被阻止：单节点最多 ${MAX_EDGES_PER_NODE} 条关系。`; return; }
+        selectedEdge.source = source; selectedEdge.target = target; selectedEdge.relation = document.getElementById('relationInput').value.trim() || '关联'; selectedEdge.type = document.getElementById('edgeType').value;
+        document.getElementById('edgeStatus').textContent = '连线已修改，等待保存图谱。'; selectEdge(selectedEdge);
+      };
+      document.getElementById('deleteEdge').onclick = () => {
+        if (!selectedEdge) return; const index = edges.indexOf(selectedEdge); if (index >= 0) edges.splice(index, 1);
+        selectedEdge = null; edgeForm.style.display = 'none'; emptyForm.style.display = 'block'; renderEdges();
+      };
+      editor.addEventListener('pointermove', () => { if (drag) renderEdges(); });
+      editor.addEventListener('click', event => {
+        if (!drawing || event.target.closest('.card') || event.target.closest('[data-edge]')) return;
+        sourceNodeId = null; document.getElementById('edgeStatus').textContent = '已清除起点，请选择新的关系起点。';
+      });
+    })();
+  </script>
+  <script>
+    // 无限画布原型：空白区域拖拽平移，滚轮围绕光标缩放；正式版由 React Flow viewport 接管。
+    (() => {
+      const viewport = { x: 0, y: 0, scale: 1 };
+      const canvas = document.getElementById('editor');
+      const worldCanvas = document.getElementById('world');
+      let pan = null;
+      const applyViewport = () => { worldCanvas.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`; };
+      canvas.addEventListener('pointerdown', event => {
+        if (event.target.closest('.card') || event.target.closest('[data-edge]') || event.target.closest('.handle')) return;
+        pan = { x:event.clientX, y:event.clientY, originX:viewport.x, originY:viewport.y };
+        canvas.classList.add('panning'); canvas.setPointerCapture(event.pointerId);
+      });
+      canvas.addEventListener('pointermove', event => {
+        if (!pan) return;
+        viewport.x = pan.originX + event.clientX - pan.x; viewport.y = pan.originY + event.clientY - pan.y; applyViewport();
+      });
+      canvas.addEventListener('pointerup', () => { pan = null; canvas.classList.remove('panning'); });
+      canvas.addEventListener('wheel', event => {
+        event.preventDefault();
+        const rect = canvas.getBoundingClientRect(); const beforeX = (event.clientX - rect.left - viewport.x) / viewport.scale; const beforeY = (event.clientY - rect.top - viewport.y) / viewport.scale;
+        viewport.scale = Math.max(.35, Math.min(2.4, viewport.scale * (event.deltaY > 0 ? .9 : 1.1)));
+        viewport.x = event.clientX - rect.left - beforeX * viewport.scale; viewport.y = event.clientY - rect.top - beforeY * viewport.scale; applyViewport();
+      }, { passive:false });
+    })();
+  </script>
+</body></html>
