@@ -1,4 +1,6 @@
 schema_version: 1
+source_of_truth: disk
+git_role: auxiliary
 last_updated: 2026-07-28
 current_branch: main
 migration_parent_commit: c409526
@@ -17,5 +19,6 @@ constraints:
   - 不添加MIT或其他开源许可证文件
 notes:
   - 本次迁移以本地当前代码为唯一事实来源
+  - 大改动必须先在 .project/changes/active 建立磁盘变更单
   - 迁移阶段只读审计已完成；运行测试和真实模型验收未在本阶段重跑
   - HANDOFF.md 已重写为当前基线，旧对话上下文不再作为事实依据

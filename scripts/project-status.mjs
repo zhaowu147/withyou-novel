@@ -68,11 +68,15 @@ const state = {
   last_release: current.last_release ?? null,
   dirty_files: files,
   dirty_count: files.length,
+  source_of_truth: manifest.source_of_truth ?? current.source_of_truth ?? "disk",
   active_changes: activeChanges(),
   deferred: current.deferred ?? [],
   mapped_areas: areas,
   recent_commits: git(["log", "-5", "--pretty=format:%h %s"]).split(/\r?\n/).filter(Boolean),
 };
+state.warning = state.dirty_count > 0 && state.active_changes.length === 0
+  ? "Git辅助检测到文件变化，但磁盘上没有活动变更单；请确认是否需要建立大改动标记。"
+  : null;
 
 if (json) {
   console.log(JSON.stringify(state, null, 2));
@@ -81,8 +85,10 @@ if (json) {
   console.log(`当前分支：${state.branch}`);
   console.log(`当前提交：${state.commit ?? "未知"}`);
   console.log(`最近发布：${state.last_release ?? "未记录"}`);
-  console.log(`未提交文件：${state.dirty_count}`);
+  console.log(`事实来源：${state.source_of_truth}`);
+  console.log(`Git辅助检测文件：${state.dirty_count}`);
   console.log(`进行中变更：${state.active_changes.length}`);
+  if (state.warning) console.log(`⚠️ ${state.warning}`);
   if (state.active_changes.length > 0) {
     for (const change of state.active_changes) {
       console.log(`  - ${change.id ?? "unknown"}: ${change.title ?? "未命名"} [${change.status ?? "active"}]`);

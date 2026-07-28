@@ -1,0 +1,22 @@
+id: CHG-2026-003
+area: project-governance
+title: 将磁盘代码设为唯一事实来源
+status: merged
+base: 3496470
+branch: main
+revision: 1
+supersedes: CHG-2026-002
+areas:
+  - project-governance
+scope:
+  - PROJECT_CONTROL.md
+  - PROJECT_STATE.md
+  - .project/**
+  - scripts/project-status.mjs
+disk_baseline: 迁移基线后的项目治理文件
+files:
+  - PROJECT_CONTROL.md
+  - PROJECT_STATE.md
+  - .project/changes/README.md
+  - .project/current.yaml
+  - scripts/project-status.mjs

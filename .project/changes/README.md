@@ -12,11 +12,12 @@
 
 ## 生命周期
 
-1. 从 `main` 创建 `change/<area>/<slug>` 分支。
-2. 创建变更单并记录基线 commit。
-3. 同一功能的后续修改增加 `revision`，不要无限创建修补分支。
-4. 完成后合并到 `main`，目录移动到 `merged/`。
-5. 放弃的方案移动到 `discarded/`，只记录原因，不把废弃代码留在当前工作树。
+1. 在改代码前创建磁盘变更单，不等待 Git 提交。
+2. 记录修改前的磁盘状态、功能区域和文件范围。
+3. 可选地从 `main` 创建 `change/<area>/<slug>` 分支。
+4. 同一功能的后续修改增加 `revision`，不要无限创建修补分支。
+5. 完成后把变更单移动到 `merged/`，不要求立即提交 Git。
+6. 放弃的方案移动到 `discarded/`，只记录原因，不把废弃代码留在当前工作树。
 
 ## change.yaml
 
@@ -25,8 +26,11 @@ id: CHG-2026-001
 area: memory
 title: 示例变更
 status: active # active|merged|discarded
-base: main
-branch: change/memory/example
+areas: [memory]
+scope:
+  - src/lib/memory/**
+disk_baseline: 修改前的磁盘状态说明
+branch: change/memory/example # 可选，仅作辅助记录
 revision: 1
 supersedes: null
 files: []
