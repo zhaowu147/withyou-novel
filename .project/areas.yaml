@@ -1,0 +1,59 @@
+schema_version: 1
+areas:
+  - id: agent-runtime
+    name: Agent运行时
+    paths:
+      - src/lib/agents/**
+      - src/app/api/agents/**
+      - src/app/(main)/_components/agent-workbench-panel.tsx
+
+  - id: memory
+    name: 记忆系统
+    paths:
+      - src/lib/memory/**
+      - src/app/api/novels/*/memories/**
+
+  - id: pi
+    name: Pi权限与技能
+    paths:
+      - src/lib/pi/**
+      - src/app/api/pi/**
+      - src/app/(main)/_components/pi-dock.tsx
+
+  - id: graph
+    name: 故事图谱
+    paths:
+      - src/lib/graph/**
+      - src/app/api/graph/**
+      - src/app/(main)/_components/story-graph*.tsx
+
+  - id: writing-tools
+    name: 写作功能区
+    paths:
+      - src/app/(main)/_components/tool-panel.tsx
+      - src/app/(main)/_components/book-analysis-panel.tsx
+      - src/app/api/book-analysis/**
+      - src/lib/tools/**
+      - src/chat/prompts/**
+
+  - id: workspace-ui
+    name: 工作区界面
+    paths:
+      - src/app/(main)/_components/**
+      - src/navigation/**
+      - src/styles/**
+
+  - id: packaging
+    name: 桌面交付与打包
+    paths:
+      - electron/**
+      - scripts/prepare-electron-runtime.mjs
+      - build-exe.cmd
+      - verify-packaging.cmd
+
+  - id: project-governance
+    name: 项目规范与变更工具
+    paths:
+      - .project/**
+      - scripts/project-status.mjs
+      - PROJECT_CONTROL.md

@@ -11,6 +11,7 @@
     "format": "biome format --write",
     "check": "biome check",
     "check:fix": "biome check --write",
+    "project:status": "node scripts/project-status.mjs",
     "test:security": "tsx --test tests/project-path.test.ts tests/request-guards.test.ts tests/prompt-boundary.test.ts",
     "test": "tsx --conditions=react-server --test tests/project-path.test.ts tests/request-guards.test.ts tests/prompt-boundary.test.ts tests/app-paths.test.ts tests/field-map.test.ts tests/json-db.test.ts tests/context-compressor.test.ts tests/local-origin-guard.test.ts tests/provenance.test.ts tests/alias-registry.test.ts tests/server-novel-data.test.ts tests/entity-alias-store.test.ts tests/consolidation-depth.test.ts tests/project-scaffold.test.ts",
     "electron:dev": "electron electron",

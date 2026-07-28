@@ -1,0 +1,17 @@
+schema_version: 1
+last_updated: 2026-07-28
+current_branch: main
+last_release: 0.1.0
+active_changes: []
+deferred:
+  - UI最终整理
+  - 故事图谱最终对账
+  - 灰度发布
+constraints:
+  - 不改变现有UI，除非任务明确要求
+  - 用户要求验证时再集中验证
+  - 用户数据不能随程序卸载删除
+  - 真实密钥和本地运行数据不得提交
+  - 不添加MIT或其他开源许可证文件
+notes:
+  - 当前仓库为交付代码快照，后续恢复正常提交历史
