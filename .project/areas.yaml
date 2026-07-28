@@ -57,3 +57,6 @@ areas:
       - .project/**
       - scripts/project-status.mjs
       - PROJECT_CONTROL.md
+      - PROJECT_STATE.md
+      - HANDOFF.md
+      - PRODUCT_EVOLUTION_CHECKLIST.md

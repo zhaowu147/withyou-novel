@@ -1,6 +1,8 @@
 schema_version: 1
 last_updated: 2026-07-28
 current_branch: main
+migration_parent_commit: c409526
+origin_main_at_migration: 6d19a79
 last_release: 0.1.0
 active_changes: []
 deferred:
@@ -14,4 +16,6 @@ constraints:
   - 真实密钥和本地运行数据不得提交
   - 不添加MIT或其他开源许可证文件
 notes:
-  - 当前仓库为交付代码快照，后续恢复正常提交历史
+  - 本次迁移以本地当前代码为唯一事实来源
+  - 迁移阶段只读审计已完成；运行测试和真实模型验收未在本阶段重跑
+  - HANDOFF.md 已重写为当前基线，旧对话上下文不再作为事实依据
