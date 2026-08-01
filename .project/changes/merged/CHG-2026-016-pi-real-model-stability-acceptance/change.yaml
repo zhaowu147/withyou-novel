@@ -1,0 +1,51 @@
+id: CHG-2026-016
+area: pi-real-model-stability
+title: Pi 真实模型本体稳定性验收
+status: completed
+base: disk-2026-08-01
+revision: 1
+disk_baseline: Pi 已完成通用 coding Agent 兼容性优化；本次由用户提供临时模型配置，验收真实模型连接、流式响应、工具边界和失败容错。
+areas:
+  - pi-runtime
+  - pi-model-provider
+  - pi-validation
+scope:
+  - settings.json
+  - src/lib/pi/model.ts
+  - src/lib/pi/source-runtime.ts
+  - src/lib/pi/coding-tools.ts
+  - tests/coding-agent.test.ts
+  - .project/current.yaml
+goals:
+  - 使用用户指定的 Anthropic-compatible Mimo 模型完成 Pi 本体真实请求验收
+  - 不把真实 API 密钥写入代码、变更记录或 Git
+  - 验证单轮响应、流式事件、基础工具调用和失败容错
+constraints:
+  - 密钥只允许存在于本机未跟踪设置或当前进程，不在输出中回显
+  - 不启动开发服务，除非后端真实请求无法脱离服务入口完成
+  - 不修改小说正文或业务数据
+validation:
+  status: passed_with_environment_finding
+  plan:
+    - 验证本机 Pi 模型配置字段（脱敏）
+    - 运行最小无工具 Pi 单轮请求
+    - 运行只读工具请求并检查工具事件与最终文本
+    - 验证环境状态工具对 Node CLI 版本的识别
+    - 重跑 Pi 相关静态检查和测试
+implemented:
+  - 使用本机未跟踪 settings.json 中的用户指定 Anthropic-compatible Mimo 配置完成真实 Pi 请求；密钥未写入代码或变更记录
+  - 无工具单轮请求成功返回 PING-OK，并收到 thinking/text/done 流式事件
+  - 只读 package.json 请求成功，收到 tool_start/tool_end/text/done 闭环事件
+  - node --version Shell 请求成功，受控命令执行和结果回传正常
+  - coding_environment_status 真实工具调用能识别 Node CLI 版本不满足 >=22，并正确返回项目依赖已安装
+  - 修正环境检测：不再把 Pi 进程内 Node 当作用户 Shell Node，改为检测实际 node.exe/node 命令
+validation_results:
+  - Node 24.14.0: Pi 目标 Biome check 通过
+  - Node 24.14.0: TypeScript noEmit 通过
+  - Node 24.14.0: 全量测试 158 项，157 通过，0 失败，1 个 Windows 符号链接能力跳过
+  - Node 24.14.0: Next 生产构建通过
+  - 真实 Mimo 模型：单轮、只读工具、Shell 工具和环境状态工具均成功
+  - 本机端口 3000 保持关闭，测试未启动开发服务
+unresolved:
+  - 当前机器 PATH 中的 Node CLI 为 v20.20.2，低于项目要求 >=22；Pi 已正确报告环境未就绪，但本次未擅自安装系统运行时
+  - 未进行真实源码写入、Git 提交/推送或破坏性命令测试，以避免测试污染和不可逆副作用

@@ -59,7 +59,10 @@ const WINDOWS_INSTALLERS: Record<Exclude<CodingToolName, "npm" | "pnpm">, string
 };
 
 function executableName(name: CodingToolName): string {
-  if (name === "node") return process.execPath;
+  // The Pi process can run inside Electron or a bundled Node runtime. Coding
+  // commands, however, must use the user's actual CLI so its version and PATH
+  // match the project package manager.
+  if (name === "node") return process.platform === "win32" ? "node.exe" : "node";
   if (name === "rust") return process.platform === "win32" ? "rustc.exe" : "rustc";
   if (process.platform === "win32" && (name === "npm" || name === "pnpm")) return `${name}.cmd`;
   return name;
@@ -84,7 +87,6 @@ function runVersion(executable: string): { version?: string; error?: string } {
 }
 
 function findExecutable(name: CodingToolName): string | undefined {
-  if (name === "node") return process.execPath;
   const candidate = executableName(name);
   if (process.platform !== "win32") {
     const result = spawnSync("which", [candidate], { encoding: "utf8", timeout: 5_000 });
