@@ -1,0 +1,29 @@
+id: CHG-2026-011
+title: Unify landing page calls to action and remove signup quota claim
+status: completed
+created_at: 2026-08-01
+baseline:
+  source_of_truth: current disk code only; git history not used
+  landing_entry: src/app/page.tsx
+  cta_style: solid green primary buttons and opaque translucent secondary buttons
+  footer_promo: signup claims three complete generations without a credit card
+purpose: >-
+  Remove the outdated signup quota promise and give all landing-page primary
+  calls to action a consistent transparent glass treatment.
+scope:
+  - Remove the bottom signup quota and credit-card promotion.
+  - Apply one reusable glass CTA visual language to landing-page signup links.
+  - Preserve routes, copy hierarchy, accessibility, and responsive layout.
+validation_plan:
+  - TypeScript check
+  - Production build
+  - Static checks for removed promo copy and glass CTA classes
+revisions: []
+actual_files:
+  - src/app/page.tsx
+validation_results:
+  promo_copy_static_check: passed (signup quota and credit-card claim removed)
+  cta_static_check: passed (all landing signup CTAs use shared glass class)
+  typecheck_node_22: passed
+  production_build_node_22: passed
+unresolved: []
