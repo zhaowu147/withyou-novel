@@ -47,6 +47,8 @@ const faqs = [
 
 const glassPrimaryCtaClassName =
   "cursor-pointer rounded-lg border border-[#7BE0A1]/55 bg-[#2D9F5A]/25 font-semibold text-sm text-white shadow-[0_8px_24px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.2)] backdrop-blur-md transition-all hover:border-[#9BE8B6]/80 hover:bg-[#2D9F5A]/40 hover:shadow-[0_0_30px_rgba(45,159,90,0.32),inset_0_1px_0_rgba(255,255,255,0.28)]";
+const featureCtaClassName =
+  "cursor-pointer rounded-lg border border-white/12 bg-white/5 font-medium text-sm text-white transition-colors hover:bg-white/10";
 
 export default function LandingPage() {
   return (
@@ -99,13 +101,13 @@ export default function LandingPage() {
         <div className="flex gap-4">
           <Link
             href={AUTH_ROUTES.login}
-            className={`${glassPrimaryCtaClassName} px-8 py-3.5`}
+            className={`${featureCtaClassName} px-8 py-3.5`}
           >
             免费开始 →
           </Link>
           <a
             href="#features"
-            className="cursor-pointer rounded-lg border border-white/12 bg-white/5 px-8 py-3.5 font-medium text-sm text-white transition-colors hover:bg-white/10"
+            className={`${featureCtaClassName} px-8 py-3.5`}
           >
             查看功能
           </a>
@@ -181,7 +183,7 @@ export default function LandingPage() {
         <h2 className="mb-8 font-bold text-3xl">脑子里那本书，现在就写出来</h2>
         <Link
           href={AUTH_ROUTES.login}
-          className={`inline-flex ${glassPrimaryCtaClassName} px-8 py-3.5`}
+          className={`inline-flex ${featureCtaClassName} px-8 py-3.5`}
         >
           免费开始 →
         </Link>
