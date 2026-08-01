@@ -110,10 +110,26 @@ function formatPiMessage(content: string): string {
     .replace(/[ \t]+\n/g, "\n");
 }
 
+const PI_TOOL_LABELS: Record<string, string> = {
+  coding_environment_status: "检查开发环境",
+  coding_environment_prepare: "准备环境与依赖",
+  github_skill_search: "搜索 GitHub Skill",
+  github_skill_read: "读取 GitHub Skill",
+  github_skill_install: "安装 GitHub Skill",
+  github_search_repositories: "搜索 GitHub 仓库",
+  github_search_code: "搜索 GitHub 代码",
+  git_repository_status: "检查 Git 状态",
+  git_commit: "创建 Git 提交",
+  git_push: "推送 Git 提交",
+};
+
+function toolLabel(name: string): string {
+  return PI_TOOL_LABELS[name] ?? name;
+}
+
 export function PiDock() {
   const [open, setOpen] = useState(false);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [novelId, setNovelId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [messages, setMessages] = useState<PiMessage[]>([]);
@@ -121,7 +137,6 @@ export function PiDock() {
   const [proposals, setProposals] = useState<DisplayProposal[]>([]);
   const [expandedProposal, setExpandedProposal] = useState<string | null>(null);
   const [sourceStatus, setSourceStatus] = useState<SourceAccessStatus | null>(null);
-  const [sourceGrantToken, setSourceGrantToken] = useState("");
   const [dockPosition, setDockPosition] = useState<DockPosition | null>(null);
   const assistantIdRef = useRef<string | null>(null);
   const dockButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -251,7 +266,6 @@ export function PiDock() {
       switchPiScope(next.workspaceId);
     }
     setWorkspaceId(next.workspaceId);
-    setNovelId(next.novelId);
   }, [switchPiScope, workspaceId]);
 
   useEffect(() => {
@@ -266,10 +280,9 @@ export function PiDock() {
   const sourceFetch = useCallback(
     (input: RequestInfo | URL, init: RequestInit = {}) => {
       const headers = new Headers(init.headers);
-      if (sourceGrantToken) headers.set("x-withyou-source-grant", sourceGrantToken);
       return workspaceFetch(input, { ...init, headers });
     },
-    [sourceGrantToken],
+    [],
   );
 
   const loadSourceStatus = useCallback(async () => {
@@ -292,15 +305,20 @@ export function PiDock() {
   }, [loadProposals, loadSourceStatus, open]);
 
   const pendingCount = useMemo(() => proposals.filter((proposal) => proposal.status === "pending").length, [proposals]);
+  const conversationUpdateKey = useMemo(
+    () => [messages.at(-1)?.content, activities.at(-1)?.status, proposals.at(-1)?.status, running].join("\u0000"),
+    [activities, messages, proposals, running],
+  );
 
   useEffect(() => {
     if (!open) return;
+    void conversationUpdateKey;
     const frame = window.requestAnimationFrame(() => {
       const conversation = conversationRef.current;
       if (conversation) conversation.scrollTop = conversation.scrollHeight;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activities, messages, open, proposals, running]);
+  }, [conversationUpdateKey, open]);
 
   const appendAssistant = useCallback((text: string, generation?: number) => {
     if (generation !== undefined && requestGenerationRef.current !== generation) return;
@@ -486,10 +504,10 @@ export function PiDock() {
                 <div className="rounded-xl border bg-muted/30 p-4">
                   <div className="flex items-center gap-2 font-medium text-sm">
                     <Sparkles className="size-4" />
-                    Pi 可以直接处理当前项目
+                    Pi 可以直接处理当前工作区的任务
                   </div>
                   <p className="mt-2 text-muted-foreground text-xs leading-5">
-                    Pi 会先读取并理解代码，再运行受控的开发命令。它可检查和操作当前 Git 仓库、检索 GitHub 仓库与代码；代码改动以可审阅补丁呈现。
+                    Pi 会先读取并理解当前工作区，再执行所需步骤。缺少环境或依赖时会尝试准备；它也可处理任意领域的 GitHub 仓库、代码与 Skill。代码修改会自动保留检查点，可随时回滚。
                   </p>
                 </div>
               )}
@@ -523,7 +541,7 @@ export function PiDock() {
                           className={`size-3 ${activity.status === "error" ? "text-red-500" : "text-emerald-500"}`}
                         />
                       )}
-                      {activity.name}
+                      {toolLabel(activity.name)}
                     </div>
                   ))}
                 </div>
@@ -533,7 +551,7 @@ export function PiDock() {
                 <section className="space-y-2">
                   <div className="flex items-center gap-2 font-medium text-sm">
                     <FilePenLine className="size-4" />
-                    代码候选补丁
+                    代码更改记录
                     {pendingCount > 0 && (
                       <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-700">
                         {pendingCount} 待处理
@@ -644,7 +662,7 @@ export function PiDock() {
                   disabled={running}
                   rows={2}
                   placeholder={
-                    "交给 Pi 一个编程任务…"
+                    "交给 Pi 一个任务…"
                   }
                   className="min-h-12 flex-1 resize-none bg-transparent px-2 py-1 text-sm outline-none"
                 />
@@ -664,7 +682,7 @@ export function PiDock() {
                 )}
               </div>
               <p className="mt-2 text-center text-[11px] text-muted-foreground">
-                受控命令 · Git 与 GitHub · 代码补丁需批准 · 自动保留检查点
+                通用任务 · 自动准备环境 · Git 与 GitHub · 代码修改可回滚
               </p>
             </footer>
           </aside>

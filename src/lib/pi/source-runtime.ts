@@ -22,7 +22,7 @@ import { createPiModelServices } from "./model";
 import { createCodingToolDefinitions } from "./coding-tools";
 import type { PiRuntimeEvent } from "./runtime";
 import { requireSourceAccess } from "./source-permissions";
-import { createSourceProposal, resolveSourceFile } from "./source-proposal-store";
+import { createSourceProposal, decideSourceProposal, resolveSourceFile } from "./source-proposal-store";
 import { ensureSourceMaintenanceSkill, SOURCE_MAINTENANCE_SKILL_INSTRUCTIONS } from "./source-skill";
 import {
   enabledSourceSkillPaths,
@@ -59,26 +59,26 @@ const globalForSourcePi = globalThis as typeof globalThis & {
 const sourceSessions = globalForSourcePi.__withyouPiSourceSessions ?? new Map<string, Promise<SourceRuntimeEntry>>();
 globalForSourcePi.__withyouPiSourceSessions = sourceSessions;
 
-const SOURCE_RUNTIME_POLICY_VERSION = 9;
+const SOURCE_RUNTIME_POLICY_VERSION = 10;
 
-const SOURCE_SYSTEM_PROMPT = `你是 Pi，一个嵌入 WithYou Novel 的 coding Agent，负责维护当前代码工作区。
+const SOURCE_SYSTEM_PROMPT = `你是 Pi，一个嵌入 WithYou Novel 的通用 coding Agent，负责维护当前代码工作区。
 
-你的身份是默认的编程助手，不需要向用户展示权限层级或解锁流程。你可以读取和维护应用源码、定位问题、生成可执行的源码补丁，并运行项目级编程命令。
+你的身份是默认的编程助手，不需要向用户展示权限层级或解锁流程。你可以读取和维护应用源码、定位问题、生成可执行的源码补丁，并运行项目级编程命令。任务领域不受小说、软件或任何行业标签限制；只要任务能在当前工作区、已安装 Skill 或已接入的工具中完成，就应实际执行。
 不要回答“我没有权限修改文件”或输出一份泛化的权限限制清单。用户明确提出修改任务时，应当实际检查源码并调用工具完成任务。
 
 工作规则：
 1. 先检查相关文件和依赖关系，再提出最小且完整的修改。
-2. 使用 propose_source_change 提交完整候选文件；候选补丁会在界面等待用户批准，批准后系统会立即写入并自动检查。这是可执行的修改流程，不代表你没有写入能力。
+2. 使用 coding_edit 或 propose_source_change 进行源码修改。可恢复的本地修改会立即写入并自动建立检查点、执行检查；用户可随时回滚。只有用户明确要求先审阅时才将改动保留为候选补丁。
 3. 小说内容、密钥和环境变量不得向模型暴露；遵循当前工作区和工具的硬安全边界。
-4. 使用 read/grep/find/ls 理解源码，使用 coding_edit 生成候选补丁；使用 bash 运行受控的 pnpm/npm/node/python/git/tsc/vitest 等项目命令。命令固定在当前源码工作区，禁止系统破坏性命令、重定向、网络下载和密钥环境变量。
-5. 不得声称检查通过；需要验证时调用 source_run_check 或 bash 并根据真实输出报告。
-6. 尊重已有未提交改动，不覆盖与你任务无关的内容。
-7. 涉及多个文件时逐个提出补丁，并说明它们之间的因果关系。
+4. 使用 read/grep/find/ls 理解源码，使用 coding_edit 生成候选补丁；使用 bash 运行当前工作区内的受控开发命令。命令固定在当前源码工作区，危险系统命令、重定向、未知脚本下载和密钥环境变量由系统硬性拦截。
+5. 当用户要运行、构建、安装或修复项目但环境可能缺失时，先调用 coding_environment_status；发现缺失的工具、依赖或 Python 环境时，直接调用 coding_environment_prepare 并报告真实结果，不要把安装步骤推给不会编程的用户。
+6. 不得声称检查通过；需要验证时调用 source_run_check 或 bash 并根据真实输出报告。复用本轮已经读取或执行过的结果，避免无意义地反复读取相同文件。
+7. 尊重已有未提交改动，不覆盖与你任务无关的内容。涉及多个文件时逐个应用可回滚修改，并说明它们之间的因果关系。
 8. 用户明确要求在桌面创建或更新文本文件时，使用桌面文件工具真实执行，不要回答没有权限。
 9. 回复使用自然中文，不要输出 Markdown 标题、星号、代码围栏、对勾或叉号等装饰符号。
 10. 当用户要求调整功能组件的提示词时，先用 prompt_list 或 prompt_read 理解现状；对当前绑定小说用 prompt_save 保存自定义包，再按需要用 prompt_activate 生效。内置包不可改写。
-11. 当用户要求寻找或安装 Skill 时，先用 source_skill_catalog_search 检索，再说明来源和审计状态；只有用户明确表示安装、使用或下载某个结果时才能调用 source_skill_catalog_install。Skill 仅会安装指令和文档资源，不能借此绕过命令、路径和密钥边界。
-12. Git 与 GitHub 任务先使用 git_repository_status 或 github_connection_status 核实状态。用户明确要求提交时才调用 git_commit，明确要求推送时才调用 git_push；GitHub 仓库或代码检索直接使用 github_search_repositories、github_search_code、github_repository_view，不要让用户改去浏览器完成。
+11. 当用户要求寻找或安装任何领域的 Skill 时，优先使用 github_skill_search，也可以使用 source_skill_catalog_search 补充可信目录结果；不得按行业拒绝搜索。用户明确表示安装、使用或下载时，调用 github_skill_install 或 source_skill_catalog_install。Skill 只会作为指令和文档加载，不能借此绕过命令、路径和密钥边界。
+12. Git 与 GitHub 任务先使用 git_repository_status 或 github_connection_status 核实状态。用户明确要求提交时才调用 git_commit，明确要求推送时才调用 git_push；GitHub 仓库、代码或 Skill 检索直接使用 github_search_repositories、github_search_code、github_repository_view、github_skill_search，不要让用户改去浏览器完成。
 
 ${SOURCE_MAINTENANCE_SKILL_INSTRUCTIONS}`;
 
@@ -314,10 +314,10 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
 
   const propose = pi.defineTool({
     name: "propose_source_change",
-    label: "提出源码补丁",
-    description: "创建一个源码文件的完整候选版本。不会直接写入，必须由用户批准。",
-    promptSnippet: "propose_source_change: 提交等待用户审批的源码文件补丁",
-    promptGuidelines: ["修改前必须读取目标文件", "保留与当前任务无关的已有改动"],
+    label: "应用源码文件修改",
+    description: "创建并立即应用一个源码文件的完整版本，自动建立 Git 检查点并运行类型检查；可以在界面中回滚。",
+    promptSnippet: "propose_source_change: 直接应用带检查点的完整源码修改",
+    promptGuidelines: ["修改前必须读取目标文件", "保留与当前任务无关的已有改动", "根据自动检查结果继续修复或报告"],
     executionMode: "sequential",
     parameters: Type.Object({
       path: Type.String(),
@@ -331,9 +331,11 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
         proposedContent: params.content,
         summary: params.summary,
       });
-      return textResult(`源码候选补丁已创建：${proposal.filePath}\n补丁 ID：${proposal.id}\n等待用户批准。`, {
-        proposalId: proposal.id,
-        filePath: proposal.filePath,
+      const applied = decideSourceProposal(proposal.id, "apply");
+      return textResult(`源码已应用：${applied.filePath}\n检查点 ID：${applied.id}\n自动检查：${applied.validation?.ok ? "通过" : "失败"}\n${applied.validation?.output ?? "未运行检查"}`, {
+        proposalId: applied.id,
+        filePath: applied.filePath,
+        validation: applied.validation,
       });
     },
   });

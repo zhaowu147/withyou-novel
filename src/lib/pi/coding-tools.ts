@@ -3,14 +3,19 @@ import "server-only";
 import type { BashOperations, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { minimatch } from "minimatch";
 
-import { createSourceProposal } from "./source-proposal-store";
+import { getCodingEnvironmentStatus, installCodingEnvironment } from "./coding-environment";
+import { createSourceProposal, decideSourceProposal } from "./source-proposal-store";
+import { installSourceSkill } from "./source-skill-manager";
 
 const BLOCKED_SEGMENTS = new Set([".git", ".data", "node_modules", "coverage", "dist", "build", "secrets"]);
 const MAX_OUTPUT = 30_000;
+const MAX_GITHUB_SKILL_BYTES = 64 * 1024;
+const MAX_GITHUB_API_OUTPUT = MAX_GITHUB_SKILL_BYTES * 2;
 const MAX_COMMAND = 2_000;
 const ALLOWED_COMMANDS = new Set([
   "pnpm",
@@ -33,11 +38,36 @@ const ALLOWED_COMMANDS = new Set([
   "yarn",
   "yarn.cmd",
   "cargo",
+  "cargo.exe",
   "go",
+  "go.exe",
+  "pip",
+  "pip.exe",
+  "uv",
+  "uv.exe",
+  "poetry",
+  "poetry.exe",
+  "bun",
+  "bun.exe",
+  "deno",
+  "deno.exe",
+  "dotnet",
+  "java",
+  "javac",
+  "mvn",
+  "mvn.cmd",
+  "gradle",
+  "gradle.bat",
+  "ruby",
+  "php",
+  "composer",
+  "make",
+  "cmake",
 ]);
 const BLOCKED_COMMANDS = /(?:^|\s)(?:del|erase|rm|rmdir|format|shutdown|reg|regsvr32|takeown|icacls|powershell|pwsh|cmd|winget|curl|wget|Invoke-WebRequest)(?:\s|$)/i;
 
 type CodingPiModule = typeof import("@earendil-works/pi-coding-agent");
+// biome-ignore lint/suspicious/noExplicitAny: Pi SDK tools intentionally have heterogeneous parameter schemas.
 type AnyToolDefinition = ToolDefinition<any, any, any>;
 type ProgramResult = { exitCode: number | null; output: string };
 
@@ -76,7 +106,7 @@ export function validateCodingCommand(command: string): void {
   if (!trimmed || trimmed.length > MAX_COMMAND) throw new Error("命令为空或超过长度限制");
   if (
     BLOCKED_COMMANDS.test(trimmed) ||
-    /[|<>;`\n\r]|\$\(|\b(?:git\s+(?:reset|clean|push|checkout))\b|\b(?:node|python|py)\s+(?:-e|-c)\b|\b(?:npx|pnpm\s+dlx)\b/i.test(trimmed)
+    /[|<>;`\n\r]|\$\(|\b(?:git\s+(?:reset|clean|push|checkout|commit))\b|\b(?:node|python|py)\s+(?:-e|-c)\b|\b(?:npx|pnpm\s+dlx)\b/i.test(trimmed)
   ) {
     throw new Error("该命令包含被禁止的系统、重定向或破坏性操作");
   }
@@ -96,6 +126,18 @@ export function validateGitHubRepository(repository: string): string {
   return normalized;
 }
 
+export function validateGitHubSkillPath(input: string): string {
+  const normalized = input.trim().replaceAll("\\", "/").replace(/^\/+/, "");
+  if (
+    !normalized ||
+    !/(^|\/)SKILL\.md$/i.test(normalized) ||
+    normalized.split("/").some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    throw new Error("GitHub Skill 路径必须是仓库内的 SKILL.md 路径");
+  }
+  return normalized;
+}
+
 function validateSearchQuery(query: string): string {
   const normalized = query.trim();
   if (normalized.length < 2 || normalized.length > 240 || /[\r\n]/.test(normalized)) {
@@ -104,11 +146,11 @@ function validateSearchQuery(query: string): string {
   return normalized;
 }
 
-function redactProgramOutput(output: string): string {
+function redactProgramOutput(output: string, limit = MAX_OUTPUT): string {
   return output
     .replace(/(?:gh[opusr]_|github_pat_)[A-Za-z0-9_]+/gi, "[已隐藏]")
     .replace(/https?:\/\/[^/\s@]+@/gi, "https://[已隐藏]@")
-    .slice(-MAX_OUTPUT);
+    .slice(-limit);
 }
 
 function killProcessTree(child: ReturnType<typeof spawn>): void {
@@ -168,7 +210,7 @@ function runCommand(root: string, command: string, options: Parameters<NonNullab
   });
 }
 
-function runProgram(root: string, executable: string, args: string[], timeout = 30_000): Promise<ProgramResult> {
+function runProgram(root: string, executable: string, args: string[], timeout = 30_000, maxOutput = MAX_OUTPUT): Promise<ProgramResult> {
   return new Promise((resolve) => {
     const child = spawn(executable, args, {
       cwd: root,
@@ -182,10 +224,10 @@ function runProgram(root: string, executable: string, args: string[], timeout = 
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ exitCode, output: redactProgramOutput(output) });
+      resolve({ exitCode, output: redactProgramOutput(output, maxOutput) });
     };
     const onData = (data: Buffer) => {
-      if (output.length < MAX_OUTPUT) output += data.toString("utf8").slice(0, MAX_OUTPUT - output.length);
+      if (output.length < maxOutput) output += data.toString("utf8").slice(0, maxOutput - output.length);
     };
     child.stdout?.on("data", onData);
     child.stderr?.on("data", onData);
@@ -224,9 +266,9 @@ function createEditTool(pi: CodingPiModule, root: string): AnyToolDefinition {
   return pi.defineTool({
     name: "coding_edit",
     label: "提出代码编辑",
-    description: "像 coding agent 一样按精确文本替换编辑源码；编辑结果会生成候选补丁，不会绕过用户审批直接写盘。",
-    promptSnippet: "coding_edit: 用精确替换创建源码候选补丁",
-    promptGuidelines: ["先用 read 读取目标文件", "每次只修改一个文件", "修改需要用户批准后才会落盘"],
+    description: "像 coding agent 一样按精确文本替换编辑源码；修改会立即写入，并保留可回滚检查点和真实类型检查结果。",
+    promptSnippet: "coding_edit: 用精确替换直接应用可回滚源码编辑",
+    promptGuidelines: ["先用 read 读取目标文件", "每次只修改一个文件", "修改后根据自动检查结果继续修复或报告"],
     executionMode: "sequential",
     parameters: Type.Object({
       path: Type.String(),
@@ -244,9 +286,13 @@ function createEditTool(pi: CodingPiModule, root: string): AnyToolDefinition {
         content = content.replace(edit.oldText, edit.newText);
       }
       const proposal = createSourceProposal({ filePath: relativePath(root, target), proposedContent: content, summary: params.summary });
+      const applied = decideSourceProposal(proposal.id, "apply");
       return {
-        content: [{ type: "text" as const, text: `候选代码补丁已创建：${proposal.filePath}\n补丁 ID：${proposal.id}\n等待用户批准。` }],
-        details: { proposalId: proposal.id, filePath: proposal.filePath },
+        content: [{
+          type: "text" as const,
+          text: `源码已应用：${applied.filePath}\n检查点 ID：${applied.id}\n自动检查：${applied.validation?.ok ? "通过" : "失败"}\n${applied.validation?.output ?? "未运行检查"}`,
+        }],
+        details: { proposalId: applied.id, filePath: applied.filePath, validation: applied.validation },
       };
     },
   });
@@ -260,6 +306,94 @@ function programText(result: ProgramResult, successFallback: string): string {
 
 function toolText(text: string, details: Record<string, unknown> = {}) {
   return { content: [{ type: "text" as const, text }], details };
+}
+
+function githubSkillId(repository: string, skillPath: string): string {
+  const readable = `${repository}-${skillPath.replace(/(^|\/)SKILL\.md$/i, "").replace(/[^A-Za-z0-9]+/g, "-")}`
+    .toLowerCase()
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48)
+    .replace(/-+$/g, "") || "github-skill";
+  const hash = createHash("sha256").update(`${repository}/${skillPath}`, "utf8").digest("hex").slice(0, 8);
+  return `${readable}-${hash}`;
+}
+
+function repositoryFromSearchResult(value: unknown): string | null {
+  if (typeof value === "string") return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) ? value : null;
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  for (const key of ["nameWithOwner", "fullName"]) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(candidate)) return candidate;
+  }
+  const owner = record.owner;
+  const name = record.name;
+  if (owner && typeof owner === "object" && typeof (owner as Record<string, unknown>).login === "string" && typeof name === "string") {
+    return `${(owner as Record<string, string>).login}/${name}`;
+  }
+  return null;
+}
+
+function decodeGitHubFile(raw: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("GitHub 没有返回可解析的文件内容");
+  }
+  if (!parsed || typeof parsed !== "object") throw new Error("GitHub 返回的 Skill 文件格式无效");
+  const record = parsed as Record<string, unknown>;
+  if (record.encoding !== "base64" || typeof record.content !== "string") throw new Error("GitHub 返回的文件不是可读取的文本内容");
+  const content = Buffer.from(record.content.replace(/\s/g, ""), "base64").toString("utf8");
+  if (!content.trim() || Buffer.byteLength(content, "utf8") > MAX_GITHUB_SKILL_BYTES) {
+    throw new Error("Skill 文件为空或超过 64KB 安全上限");
+  }
+  return content;
+}
+
+function createEnvironmentTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
+  const status = pi.defineTool({
+    name: "coding_environment_status",
+    label: "检查编程环境",
+    description: "检查当前机器的 Node、Git、Python、包管理器和当前项目依赖状态。",
+    promptSnippet: "coding_environment_status: 检查开发环境与项目依赖",
+    executionMode: "sequential",
+    parameters: Type.Object({}),
+    execute: async () => {
+      const environment = getCodingEnvironmentStatus(root);
+      return toolText(JSON.stringify(environment, null, 2), { ready: environment.ready });
+    },
+  });
+
+  const prepare = pi.defineTool({
+    name: "coding_environment_prepare",
+    label: "准备编程环境和依赖",
+    description: "自动安装缺失的受支持开发工具、项目依赖和 Python 虚拟环境；在 Windows 上优先使用 winget。",
+    promptSnippet: "coding_environment_prepare: 自动准备开发环境、项目依赖和 Python 虚拟环境",
+    promptGuidelines: ["当用户要求运行、构建或安装项目但依赖缺失时直接调用", "必须根据真实结果说明已完成项和仍需处理项"],
+    executionMode: "sequential",
+    parameters: Type.Object({
+      tools: Type.Optional(Type.Array(Type.Union([
+        Type.Literal("node"), Type.Literal("git"), Type.Literal("python"), Type.Literal("java"),
+        Type.Literal("dotnet"), Type.Literal("go"), Type.Literal("rust"),
+      ]), { maxItems: 7 })),
+    }),
+    execute: async (_id, rawParams) => {
+      const params = rawParams as { tools?: Array<"node" | "git" | "python" | "java" | "dotnet" | "go" | "rust"> };
+      const result = installCodingEnvironment(root, params.tools);
+      const response = {
+        ready: result.status.ready,
+        tools: result.status.tools.map(({ name, available, version, minimum, error }) => ({ name, available, version, minimum, error })),
+        project: result.status.project,
+        attempted: result.attempted,
+        output: result.output.map((entry) => redactProgramOutput(entry, 8_000)),
+        requiresUserAction: result.requiresUserAction,
+      };
+      return toolText(JSON.stringify(response, null, 2), { ready: response.ready, attempted: response.attempted.length });
+    },
+  });
+
+  return [status, prepare];
 }
 
 function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
@@ -394,7 +528,99 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
     },
   });
 
-  return [repositoryStatus, commit, push, connectionStatus, searchRepositories, searchCode, repositoryView];
+  const searchSkills = pi.defineTool({
+    name: "github_skill_search",
+    label: "搜索 GitHub Skill",
+    description: "在 GitHub 的任意行业仓库中搜索 SKILL.md。搜索不受小说、编程或其他行业白名单限制。",
+    promptSnippet: "github_skill_search: 从 GitHub 搜索任意领域的 Agent Skill",
+    promptGuidelines: ["用户提出任何领域的 Skill 需求时直接搜索", "先返回候选来源和路径；用户明确要求使用或安装后才调用 github_skill_install"],
+    executionMode: "sequential",
+    parameters: Type.Object({ query: Type.String(), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })) }),
+    execute: async (_id, rawParams) => {
+      const params = rawParams as { query: string; limit?: number };
+      const query = validateSearchQuery(params.query);
+      const result = await runProgram(root, "gh", [
+        "search", "code", query, "--filename", "SKILL.md", "--limit", String(params.limit ?? 8),
+        "--json", "path,repository,url,textMatches",
+      ]);
+      const raw = programText(result, "[]");
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        throw new Error("GitHub Skill 搜索结果格式无效");
+      }
+      const skills = Array.isArray(parsed)
+        ? parsed.flatMap((entry) => {
+            if (!entry || typeof entry !== "object") return [];
+            const record = entry as Record<string, unknown>;
+            const repository = repositoryFromSearchResult(record.repository);
+            const path = typeof record.path === "string" ? record.path : null;
+            if (!repository || !path) return [];
+            try {
+              const skillPath = validateGitHubSkillPath(path);
+              const textMatches = Array.isArray(record.textMatches) ? record.textMatches : [];
+              const preview = textMatches
+                .flatMap((match) => (match && typeof match === "object" && typeof (match as Record<string, unknown>).fragment === "string"
+                  ? [(match as Record<string, string>).fragment.slice(0, 400)]
+                  : []))
+                .at(0);
+              return [{ repository, path: skillPath, url: typeof record.url === "string" ? record.url : undefined, preview }];
+            } catch {
+              return [];
+            }
+          })
+        : [];
+      return toolText(JSON.stringify({ query, skills }, null, 2), { count: skills.length });
+    },
+  });
+
+  const readSkill = pi.defineTool({
+    name: "github_skill_read",
+    label: "读取 GitHub Skill",
+    description: "读取 GitHub 仓库中任意行业 Skill 的 SKILL.md 内容，仅用于理解，不会安装或执行。",
+    promptSnippet: "github_skill_read: 读取 GitHub Skill 的说明内容",
+    executionMode: "sequential",
+    parameters: Type.Object({ repository: Type.String(), path: Type.String() }),
+    execute: async (_id, rawParams) => {
+      const params = rawParams as { repository: string; path: string };
+      const repository = validateGitHubRepository(params.repository);
+      const skillPath = validateGitHubSkillPath(params.path);
+      const result = await runProgram(root, "gh", ["api", `repos/${repository}/contents/${skillPath}`], 30_000, MAX_GITHUB_API_OUTPUT);
+      const content = decodeGitHubFile(programText(result, ""));
+      return toolText(content, { repository, path: skillPath, bytes: Buffer.byteLength(content, "utf8") });
+    },
+  });
+
+  const installSkill = pi.defineTool({
+    name: "github_skill_install",
+    label: "安装 GitHub Skill",
+    description: "将用户明确要求使用的 GitHub SKILL.md 安装到 Pi 的本地 Skill 目录；只保存说明文档，不执行仓库脚本。",
+    promptSnippet: "github_skill_install: 安装用户明确要求使用的 GitHub Skill",
+    promptGuidelines: ["必须先搜索或读取目标 Skill", "仅在用户明确要求安装、下载或使用时调用", "安装后说明该 Skill 会在下一项任务开始时生效"],
+    executionMode: "sequential",
+    parameters: Type.Object({ repository: Type.String(), path: Type.String() }),
+    execute: async (_id, rawParams) => {
+      const params = rawParams as { repository: string; path: string };
+      const repository = validateGitHubRepository(params.repository);
+      const skillPath = validateGitHubSkillPath(params.path);
+      const result = await runProgram(root, "gh", ["api", `repos/${repository}/contents/${skillPath}`], 30_000, MAX_GITHUB_API_OUTPUT);
+      const content = decodeGitHubFile(programText(result, ""));
+      const installed = installSourceSkill({
+        id: githubSkillId(repository, skillPath),
+        content,
+        source: { type: "remote", uri: `https://github.com/${repository}/blob/HEAD/${skillPath}`, publisher: repository },
+        enabled: true,
+      });
+      return toolText(`Skill 已安装并启用：${installed.name}（${installed.id}）。它会从下一项 Pi 任务开始加载。`, {
+        skill: installed,
+        repository,
+        path: skillPath,
+      });
+    },
+  });
+
+  return [repositoryStatus, commit, push, connectionStatus, searchRepositories, searchCode, repositoryView, searchSkills, readSkill, installSkill];
 }
 
 export function createCodingToolDefinitions(pi: CodingPiModule, root: string): AnyToolDefinition[] {
@@ -408,7 +634,7 @@ export function createCodingToolDefinitions(pi: CodingPiModule, root: string): A
   };
   const safeFind = {
     exists: (absolute: string) => fs.existsSync(safePath(root, relativePath(root, absolute))),
-    glob: (pattern: string, cwd: string, options: { ignore: string[]; limit: number }) =>
+    glob: (pattern: string, _cwd: string, options: { ignore: string[]; limit: number }) =>
       walkFiles(root).filter((file) => minimatch(file, pattern, { dot: false }) && !options.ignore.some((ignore) => minimatch(file, ignore))).slice(0, options.limit),
   };
   const safeLs = {
@@ -417,7 +643,7 @@ export function createCodingToolDefinitions(pi: CodingPiModule, root: string): A
     readdir: (absolute: string) => fs.readdirSync(safePath(root, relativePath(root, absolute))),
   };
   const bashOperations: BashOperations = {
-    exec: (command, cwd, options) => runCommand(root, command, options),
+    exec: (command, _cwd, options) => runCommand(root, command, options),
   };
   return [
     pi.createReadToolDefinition(root, { operations: safeRead }),
@@ -426,6 +652,7 @@ export function createCodingToolDefinitions(pi: CodingPiModule, root: string): A
     pi.createLsToolDefinition(root, { operations: safeLs }),
     pi.createBashToolDefinition(root, { operations: bashOperations }),
     createEditTool(pi, root),
+    ...createEnvironmentTools(pi, root),
     ...createGitTools(pi, root),
   ];
 }

@@ -1,12 +1,13 @@
 import "server-only";
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { appStateDir } from "@/lib/runtime/app-paths";
 
-export type CodingToolName = "node" | "npm" | "pnpm" | "git" | "python";
+export type CodingToolName = "node" | "npm" | "pnpm" | "git" | "python" | "java" | "dotnet" | "go" | "rust";
 
 export interface CodingToolStatus {
   name: CodingToolName;
@@ -28,6 +29,7 @@ export interface CodingEnvironmentStatus {
     packageManager?: "pnpm" | "npm";
     dependenciesInstalled: boolean;
     pythonEnvironment?: string;
+    detectedTools: CodingToolName[];
   };
   checkedAt: string;
 }
@@ -43,10 +45,15 @@ const WINDOWS_INSTALLERS: Record<Exclude<CodingToolName, "npm" | "pnpm">, string
   node: "OpenJS.NodeJS.LTS",
   git: "Git.Git",
   python: "Python.Python.3.12",
+  java: "EclipseAdoptium.Temurin.21.JDK",
+  dotnet: "Microsoft.DotNet.SDK.8",
+  go: "GoLang.Go",
+  rust: "Rustlang.Rustup",
 };
 
 function executableName(name: CodingToolName): string {
   if (name === "node") return process.execPath;
+  if (name === "rust") return process.platform === "win32" ? "rustc.exe" : "rustc";
   if (process.platform === "win32" && (name === "npm" || name === "pnpm")) return `${name}.cmd`;
   return name;
 }
@@ -61,7 +68,7 @@ function runVersion(executable: string): { version?: string; error?: string } {
       stdio: ["ignore", "pipe", "pipe"],
     });
     if (result.error) return { error: result.error.message };
-    if (result.status !== 0) return { error: `${result.stderr || "退出码 " + result.status}`.trim() };
+    if (result.status !== 0) return { error: `${result.stderr || `退出码 ${result.status}`}`.trim() };
     const version = `${result.stdout || ""}`.trim().split(/\r?\n/)[0];
     return version ? { version } : { error: "版本信息为空" };
   } catch (error) {
@@ -97,7 +104,7 @@ function toolStatus(name: CodingToolName): CodingToolStatus {
     executable,
     version: result.version,
     minimum,
-    error: result.error || (result.version && !minimumSatisfied ? `版本过低，需要 ${minimum}` : undefined),
+    error: result.error ?? (result.version && !minimumSatisfied ? `版本过低，需要 ${minimum}` : undefined),
   };
 }
 
@@ -111,10 +118,18 @@ function projectStatus(root: string): CodingEnvironmentStatus["project"] {
   const dependenciesInstalled = manager
     ? fs.existsSync(path.join(root, "node_modules"))
     : false;
-  const requirements = path.join(root, "requirements.txt");
-  const pythonEnvironment = fs.existsSync(requirements) ? path.join(root, ".withyou-python") : undefined;
-  return manager || pythonEnvironment
-    ? { packageManager: manager, dependenciesInstalled, pythonEnvironment }
+  const hasRequirements = fs.existsSync(path.join(root, "requirements.txt"));
+  const hasPyProject = fs.existsSync(path.join(root, "pyproject.toml"));
+  const pythonEnvironment = hasRequirements || hasPyProject ? path.join(root, ".withyou-python") : undefined;
+  const detectedTools = new Set<CodingToolName>();
+  if (manager) detectedTools.add("node");
+  if (pythonEnvironment) detectedTools.add("python");
+  if (fs.existsSync(path.join(root, "pom.xml")) || fs.existsSync(path.join(root, "build.gradle")) || fs.existsSync(path.join(root, "build.gradle.kts"))) detectedTools.add("java");
+  if (fs.readdirSync(root, { withFileTypes: true }).some((entry) => entry.isFile() && entry.name.endsWith(".csproj"))) detectedTools.add("dotnet");
+  if (fs.existsSync(path.join(root, "go.mod"))) detectedTools.add("go");
+  if (fs.existsSync(path.join(root, "Cargo.toml"))) detectedTools.add("rust");
+  return manager || pythonEnvironment || detectedTools.size > 0
+    ? { packageManager: manager, dependenciesInstalled, pythonEnvironment, detectedTools: [...detectedTools] }
     : undefined;
 }
 
@@ -123,7 +138,7 @@ export function codingEnvironmentRoot(): string {
 }
 
 export function getCodingEnvironmentStatus(root = process.cwd()): CodingEnvironmentStatus {
-  const tools = (["node", "npm", "pnpm", "git", "python"] as CodingToolName[]).map(toolStatus);
+  const tools = (["node", "npm", "pnpm", "git", "python", "java", "dotnet", "go", "rust"] as CodingToolName[]).map(toolStatus);
   const requiredReady = tools.filter((tool) => tool.required).every((tool) => tool.available);
   const pnpmReady = tools.find((tool) => tool.name === "pnpm")?.available;
   const npmReady = tools.find((tool) => tool.name === "npm")?.available;
@@ -139,28 +154,39 @@ export function getCodingEnvironmentStatus(root = process.cwd()): CodingEnvironm
   };
 }
 
+function safeInstallerEnvironment(): NodeJS.ProcessEnv {
+  const environment = {} as NodeJS.ProcessEnv;
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!value || /(?:KEY|TOKEN|SECRET|PASSWORD|COOKIE|AUTH|CREDENTIAL|PRIVATE)/i.test(key)) continue;
+    environment[key] = value;
+  }
+  return environment;
+}
+
 function runInstaller(executable: string, args: string[]): { ok: boolean; output: string } {
   const result = spawnSync(executable, args, {
     encoding: "utf8",
     timeout: 15 * 60_000,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
+    env: safeInstallerEnvironment(),
   });
   const output = `${result.stdout || ""}${result.stderr || ""}`.trim().slice(-20_000);
   return { ok: result.status === 0, output: output || (result.status === 0 ? "完成" : "失败") };
 }
 
-export function installCodingEnvironment(root = process.cwd()): CodingEnvironmentInstallResult {
+export function installCodingEnvironment(root = process.cwd(), requestedTools: CodingToolName[] = []): CodingEnvironmentInstallResult {
   const attempted: string[] = [];
   const output: string[] = [];
   const requiresUserAction: string[] = [];
   let status = getCodingEnvironmentStatus(root);
 
+  const installTargets = new Set<CodingToolName>(["node", "git", "python", ...requestedTools]);
   if (process.platform === "win32") {
     const winget = spawnSync("where.exe", ["winget.exe"], { encoding: "utf8", timeout: 5_000, windowsHide: true });
     if (winget.status === 0) {
       for (const tool of status.tools) {
-        if (tool.available || !(tool.name in WINDOWS_INSTALLERS)) continue;
+        if (tool.available || !installTargets.has(tool.name) || !(tool.name in WINDOWS_INSTALLERS)) continue;
         const id = WINDOWS_INSTALLERS[tool.name as keyof typeof WINDOWS_INSTALLERS];
         attempted.push(`winget install ${id}`);
         const result = runInstaller("winget.exe", [
@@ -194,12 +220,23 @@ export function installCodingEnvironment(root = process.cwd()): CodingEnvironmen
   }
 
   const requirements = path.join(root, "requirements.txt");
-  if (status.tools.find((tool) => tool.name === "python")?.available && fs.existsSync(requirements)) {
+  if (status.tools.find((tool) => tool.name === "python")?.available && (fs.existsSync(requirements) || fs.existsSync(path.join(root, "pyproject.toml")))) {
     const venv = path.join(root, ".withyou-python");
     if (!fs.existsSync(venv)) {
       attempted.push("python -m venv .withyou-python");
       const created = runInstaller(executableName("python"), ["-m", "venv", ".withyou-python"]);
       output.push(`Python venv: ${created.output}`);
+    }
+    const venvPython = process.platform === "win32" ? path.join(venv, "Scripts", "python.exe") : path.join(venv, "bin", "python");
+    const marker = path.join(venv, ".withyou-requirements.sha256");
+    const requirementsHash = fs.existsSync(requirements) ? createHash("sha256").update(fs.readFileSync(requirements)).digest("hex") : null;
+    const alreadyInstalled = requirementsHash && fs.existsSync(marker) && fs.readFileSync(marker, "utf8").trim() === requirementsHash;
+    if (requirementsHash && !alreadyInstalled && fs.existsSync(venvPython)) {
+      attempted.push("python -m pip install -r requirements.txt");
+      const installed = runInstaller(venvPython, ["-m", "pip", "install", "--disable-pip-version-check", "-r", "requirements.txt"]);
+      output.push(`Python 项目依赖: ${installed.output}`);
+      if (installed.ok) fs.writeFileSync(marker, requirementsHash, "utf8");
+      else requiresUserAction.push("Python 项目依赖安装失败；Pi 已保留真实输出，可根据错误继续修复。");
     }
   }
 
