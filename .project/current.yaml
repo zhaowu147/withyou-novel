@@ -1,7 +1,7 @@
 schema_version: 1
 source_of_truth: disk
 git_role: auxiliary
-last_updated: 2026-08-01
+last_updated: 2026-08-02
 current_branch: agent/landing-glass-cta
 migration_parent_commit: c409526
 origin_main_at_migration: 6d19a79
@@ -43,3 +43,4 @@ notes:
   - CHG-2026-014 已将 Pi 优化为不按行业限制的通用 coding Agent：可自动准备开发环境和项目依赖，支持常见 Node/Python/Java/.NET/Go/Rust 工具，能搜索、读取、安装任意 GitHub 仓库的文档型 Skill，并对可回滚源码修改自动应用检查点。未接入小说或其他业务 API；Node 24.14.0 全量测试 156 项、155 通过、0 失败、1 跳过，生产构建通过。
   - CHG-2026-015 已补齐 Pi 的 pnpm/npm/Corepack 包管理器兼容、Python 依赖状态判断和异常工作区容错；源码检查不再写死 pnpm，Corepack 已纳入受控命令。Node 24.14.0 全量测试 158 项、157 通过、0 失败、1 跳过，生产构建通过；GitHub CLI 的任意领域 SKILL.md 搜索和读取实测通过。Pi 业务 API 接入仍按后续独立阶段处理。
   - CHG-2026-016 已使用用户提供的 Anthropic-compatible Mimo 模型完成 Pi 真实本体验收：单轮响应、流式事件、只读源码工具、受控 Shell 和环境状态工具均闭环成功。验收发现本机 PATH 的 Node CLI 为 v20.20.2，低于项目要求 >=22；Pi 已修正为准确报告未就绪，未擅自安装系统运行时。密钥未进入代码、变更记录或 Git。
+  - CHG-2026-017 已将当前工作区绑定的小说项目服务层直接接入 Pi：支持项目上下文、创作字段、章节、实体、伏笔、时间线、记忆召回/候选暂存和图谱只读；章节与字段写入受用户意图、版本哈希和检查点保护，禁止跨小说与高风险删除/审批/任意图谱替换。Node 24 全量测试 161 项、160 通过、0 失败、1 跳过，类型检查、生产构建和隔离项目回滚验收通过。

@@ -21,6 +21,7 @@ import { appStateDir } from "@/lib/runtime/app-paths";
 import { resolveProjectPackageManager } from "./coding-environment";
 import { createCodingToolDefinitions } from "./coding-tools";
 import { createPiModelServices } from "./model";
+import { createProjectApiToolDefinitions } from "./project-tools";
 import type { PiRuntimeEvent } from "./runtime";
 import { requireSourceAccess } from "./source-permissions";
 import { createSourceProposal, decideSourceProposal, resolveSourceFile } from "./source-proposal-store";
@@ -64,7 +65,7 @@ const globalForSourcePi = globalThis as typeof globalThis & {
 const sourceSessions = globalForSourcePi.__withyouPiSourceSessions ?? new Map<string, Promise<SourceRuntimeEntry>>();
 globalForSourcePi.__withyouPiSourceSessions = sourceSessions;
 
-const SOURCE_RUNTIME_POLICY_VERSION = 10;
+const SOURCE_RUNTIME_POLICY_VERSION = 11;
 
 const SOURCE_SYSTEM_PROMPT = `你是 Pi，一个嵌入 WithYou Novel 的通用 coding Agent，负责维护当前代码工作区。
 
@@ -84,6 +85,9 @@ const SOURCE_SYSTEM_PROMPT = `你是 Pi，一个嵌入 WithYou Novel 的通用 c
 10. 当用户要求调整功能组件的提示词时，先用 prompt_list 或 prompt_read 理解现状；对当前绑定小说用 prompt_save 保存自定义包，再按需要用 prompt_activate 生效。内置包不可改写。
 11. 当用户要求寻找或安装任何领域的 Skill 时，优先使用 github_skill_search，也可以使用 source_skill_catalog_search 补充可信目录结果；不得按行业拒绝搜索。用户明确表示安装、使用或下载时，调用 github_skill_install 或 source_skill_catalog_install。Skill 只会作为指令和文档加载，不能借此绕过命令、路径和密钥边界。
 12. Git 与 GitHub 任务先使用 git_repository_status 或 github_connection_status 核实状态。用户明确要求提交时才调用 git_commit，明确要求推送时才调用 git_push；GitHub 仓库、代码或 Skill 检索直接使用 github_search_repositories、github_search_code、github_repository_view、github_skill_search，不要让用户改去浏览器完成。
+
+13. 当前工作区如果已绑定小说，项目数据工具会直接连接本地项目服务层：先用 project_context 或 project_read_data 理解作品资料，再用 project_list_chapters、project_read_chapter、project_entities、project_foreshadows、project_timeline、project_memories 和 project_graph_read 获取事实。小说章节和创作字段的写入只在用户明确要求时执行；章节写入必须先读取并携带 expectedHash，项目字段写入会建立检查点。只有用户明确要求回滚时才使用 project_rollback，并且不得覆盖检查点之后的其他修改。
+14. 项目工具只作用于当前工作区绑定的小说，模型不得自行提供或猜测其他 novelId。project_memories 的 stage 只是候选暂存，不是用户批准的事实；项目图谱桥接阶段只读，不要声称已自动提取或更新图谱。未绑定小说时，使用源码、Git、GitHub 和 Skill 工具继续完成通用 coding Agent 任务，不要要求用户手动调用 HTTP API。
 
 ${SOURCE_MAINTENANCE_SKILL_INSTRUCTIONS}`;
 
@@ -742,7 +746,11 @@ async function createSourceRuntime(workspaceId: string, novelId: string | null):
     systemPrompt: SOURCE_SYSTEM_PROMPT,
   });
   await resourceLoader.reload();
-  const customTools = [...createSourceTools(pi, novelId), ...createCodingToolDefinitions(pi, workspace)];
+  const customTools = [
+    ...createSourceTools(pi, novelId),
+    ...createProjectApiToolDefinitions(pi, novelId),
+    ...createCodingToolDefinitions(pi, workspace),
+  ];
   const sessionDirectory = path.join(appStateDir(), "pi-source-sessions", workspaceId, novelId ?? "unbound");
   const { session } = await pi.createAgentSession({
     cwd: workspace,

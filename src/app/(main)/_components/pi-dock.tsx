@@ -121,6 +121,18 @@ const PI_TOOL_LABELS: Record<string, string> = {
   git_repository_status: "检查 Git 状态",
   git_commit: "创建 Git 提交",
   git_push: "推送 Git 提交",
+  project_context: "读取项目上下文",
+  project_list_chapters: "列出项目章节",
+  project_read_chapter: "读取项目章节",
+  project_write_chapter: "写入项目章节",
+  project_rollback: "回滚项目修改",
+  project_read_data: "读取创作资料",
+  project_write_data: "写入创作资料",
+  project_entities: "读取或更新实体",
+  project_foreshadows: "读取或更新伏笔",
+  project_timeline: "读取项目时间线",
+  project_memories: "召回或暂存记忆",
+  project_graph_read: "读取故事图谱",
 };
 
 function toolLabel(name: string): string {
