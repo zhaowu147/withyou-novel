@@ -1,5 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 
+import { loadChapterFile, saveChapterFile } from "@/lib/local/store";
+import { contentVersionHash } from "@/lib/novel/content-hash";
 import { novelFS } from "@/lib/novel-fs";
 import { verifyWorkspaceAccess, workspaceCredentials, workspaceErrorResponse } from "@/lib/workspaces/ownership";
 
@@ -28,7 +30,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ nove
     if (content === null) {
       return NextResponse.json({ error: "chapter not found" }, { status: 404 });
     }
-    return NextResponse.json({ success: true, data: { content, number: num } });
+    return NextResponse.json({
+      success: true,
+      data: { content, number: num, contentHash: contentVersionHash(content) },
+    });
   } catch (err: unknown) {
     const ownershipResponse = workspaceErrorResponse(err);
     if (ownershipResponse) return ownershipResponse;
@@ -55,15 +60,28 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ nove
     const credentials = workspaceCredentials(req);
     verifyWorkspaceAccess(credentials.workspaceId, credentials.lease, novelName);
     const body = await req.json();
-    const { content, title } = body as { content: string; title?: string };
+    const { content, title, expectedHash } = body as { content: string; title?: string; expectedHash?: string };
 
     if (!content || typeof content !== "string") {
       return NextResponse.json({ error: "content required" }, { status: 400 });
     }
 
+    const existingRecord = loadChapterFile(novelName, num);
+    const existing = novelFS.readChapter(novelName, num);
+    if (expectedHash && existing !== null && expectedHash !== contentVersionHash(existing)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "章节已被其他修改更新，请重新读取后再保存",
+          code: "CHAPTER_VERSION_CONFLICT",
+          data: { content: existing, contentHash: contentVersionHash(existing), number: num },
+        },
+        { status: 409 },
+      );
+    }
+
     let chapterTitle = title;
     if (!chapterTitle) {
-      const existing = novelFS.readChapter(novelName, num);
       if (existing) {
         const m = existing.match(/^#\s*(.+)$/m);
         if (m) chapterTitle = m[1].trim();
@@ -71,9 +89,38 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ nove
     }
     if (!chapterTitle) chapterTitle = `第${num}章`;
 
-    novelFS.writeChapter(novelName, num, chapterTitle, content);
+    try {
+      await saveChapterFile({
+        novel_id: novelName,
+        number: num,
+        title: chapterTitle,
+        content,
+        is_final: existingRecord?.is_final ?? false,
+        id: existingRecord?.id,
+        // 即使旧客户端没有传 expectedHash，也把本次读取到的版本带入锁内复核。
+        // 这样两个同时到达的旧客户端不会互相覆盖。
+        expectedContentHash: existing === null ? undefined : contentVersionHash(existing),
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "章节已被其他修改更新，请重新读取后再保存") {
+        const latest = novelFS.readChapter(novelName, num) ?? "";
+        return NextResponse.json(
+          {
+            success: false,
+            error: error.message,
+            code: "CHAPTER_VERSION_CONFLICT",
+            data: { content: latest, contentHash: contentVersionHash(latest), number: num },
+          },
+          { status: 409 },
+        );
+      }
+      throw error;
+    }
 
-    return NextResponse.json({ success: true, data: { number: num, title: chapterTitle } });
+    return NextResponse.json({
+      success: true,
+      data: { number: num, title: chapterTitle, contentHash: contentVersionHash(content) },
+    });
   } catch (err: unknown) {
     const ownershipResponse = workspaceErrorResponse(err);
     if (ownershipResponse) return ownershipResponse;

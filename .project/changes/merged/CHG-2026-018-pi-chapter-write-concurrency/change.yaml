@@ -1,0 +1,26 @@
+id: CHG-2026-018
+title: Pi 章节写入并发保护
+status: completed
+created_at: 2026-08-02
+completed_at: 2026-08-02
+scope:
+  - 为章节文件与章节索引增加按小说粒度的进程内队列和跨进程锁
+  - 将 expectedHash 复核放入锁内，避免两个调用同时通过旧哈希检查
+  - 让 Pi 项目章节写入、回滚和现有章节 API 复用同一写入路径
+  - 保持无 expectedHash 的新章节创建兼容行为，同时为已有章节自动复核服务端读取版本
+actual_files:
+  - src/lib/local/chapter-mutation-lock.ts
+  - src/lib/local/store.ts
+  - src/lib/pi/project-tools.ts
+  - src/app/api/local-novels/[novelName]/chapters/[number]/route.ts
+  - tests/project-api-runtime.test.ts
+validation:
+  tests: "Node 24 全量测试 161 项，160 通过，0 失败，1 项 Windows 符号链接能力跳过"
+  targeted_runtime: "两个并发 Pi 章节写入使用同一旧哈希时恰好一个成功、一个冲突；检查点回滚通过"
+  typecheck: "tsc --noEmit 通过"
+  build: "Next production build 通过"
+notes:
+  - saveChapterFile 现在把正文、chapter_files 索引和 total_chapters 更新放进同一小说写锁
+  - proper-lockfile 覆盖开发服务器、Electron 多开和独立进程；同进程请求使用 Promise 队列
+  - legacy 直接调用 novelFS.writeChapter 的非 Pi 工具仍未统一迁移到该写入入口，后续如要全项目写入统一可另立变更
+revision: 1

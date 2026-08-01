@@ -339,6 +339,7 @@ function createProjectTools(pi: PiCodingAgentModule, novelId: string | null): An
         content: params.content,
         is_final: existing.is_final,
         id: existing.id,
+        expectedContentHash: currentHash,
       });
       const checkpoint: ChapterCheckpoint = {
         kind: "chapter",
@@ -384,6 +385,7 @@ function createProjectTools(pi: PiCodingAgentModule, novelId: string | null): An
           content: checkpoint.previousContent,
           is_final: current.is_final,
           id: current.id,
+          expectedContentHash: checkpoint.nextHash,
         });
       } else {
         const current = projectData(id);

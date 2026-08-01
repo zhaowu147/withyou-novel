@@ -32,8 +32,15 @@ test("项目章节写入经过版本校验并可以通过检查点回滚", async
     const before = await read.execute("read", { number: 1 });
     const expectedHash = contentVersionHash("旧正文");
     assert.equal(before.details?.contentHash, expectedHash);
-    const updated = await write.execute("write", { number: 1, content: "新正文", expectedHash });
-    const checkpointId = updated.details?.checkpointId;
+    const concurrentWrites = await Promise.allSettled([
+      write.execute("write-a", { number: 1, content: "并发正文 A", expectedHash }),
+      write.execute("write-b", { number: 1, content: "并发正文 B", expectedHash }),
+    ]);
+    assert.equal(concurrentWrites.filter((result) => result.status === "fulfilled").length, 1);
+    assert.equal(concurrentWrites.filter((result) => result.status === "rejected").length, 1);
+    const updated = concurrentWrites.find((result) => result.status === "fulfilled");
+    assert.ok(updated && updated.status === "fulfilled");
+    const checkpointId = updated.value.details?.checkpointId;
     assert.equal(typeof checkpointId, "string");
     await assert.rejects(
       () => write.execute("stale", { number: 1, content: "覆盖", expectedHash }),
