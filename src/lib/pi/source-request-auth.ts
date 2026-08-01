@@ -28,14 +28,15 @@ function assertLocalRequest(request: Request): void {
   if (!verdict.ok) throw new SourceRequestAuthError(verdict.reason, verdict.status);
 }
 
-export async function authorizeSourceRequest(request: Request): Promise<{ workspaceId: string; grantToken: string }> {
+export async function authorizeSourceRequest(request: Request): Promise<{ workspaceId: string; novelId: string | null; grantToken: string }> {
   assertLocalRequest(request);
   const user = await getApiUser();
   if (!user) throw new SourceRequestAuthError("请先登录", 401);
   const credentials = workspaceCredentials(request);
-  verifyWorkspaceLease(credentials.workspaceId, credentials.lease);
+  const binding = verifyWorkspaceLease(credentials.workspaceId, credentials.lease);
   return {
     workspaceId: credentials.workspaceId,
+    novelId: binding.novelId,
     grantToken: request.headers.get("x-withyou-source-grant")?.trim() ?? "",
   };
 }

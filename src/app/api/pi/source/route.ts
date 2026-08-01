@@ -28,7 +28,7 @@ export async function POST(request: Request): Promise<Response> {
       const send = (event: PiRuntimeEvent) => {
         if (!closed) controller.enqueue(encodeEvent(event));
       };
-      void promptSourcePi(message, send)
+      void promptSourcePi(auth.workspaceId, auth.novelId, message, send)
         .then(() => send({ type: "done" }))
         .catch((error: unknown) => {
           send({ type: "error", text: error instanceof Error ? error.message : "源码 Pi 运行失败" });
@@ -39,7 +39,7 @@ export async function POST(request: Request): Promise<Response> {
         });
     },
     async cancel() {
-      await abortSourcePi();
+      await abortSourcePi(auth.workspaceId, auth.novelId);
     },
   });
 
@@ -55,7 +55,7 @@ export async function POST(request: Request): Promise<Response> {
 export async function DELETE(request: Request): Promise<Response> {
   try {
     const auth = await authorizeSourceRequest(request);
-    await abortSourcePi();
+    await abortSourcePi(auth.workspaceId, auth.novelId);
     return Response.json({ success: true });
   } catch (error) {
     return sourceRequestErrorResponse(error);

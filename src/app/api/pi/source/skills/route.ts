@@ -39,6 +39,15 @@ export async function POST(request: Request): Promise<Response> {
           : undefined,
       publicKey: typeof body.publicKey === "string" ? body.publicKey : undefined,
       signature: typeof body.signature === "string" ? body.signature : undefined,
+      resources: Array.isArray(body.resources)
+        ? body.resources.flatMap((resource) => {
+            if (!resource || typeof resource !== "object") return [];
+            const value = resource as Record<string, unknown>;
+            return typeof value.path === "string" && typeof value.content === "string"
+              ? [{ path: value.path, content: value.content }]
+              : [];
+          })
+        : undefined,
       enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
     });
     return Response.json({ success: true, data: skill }, { status: 201 });

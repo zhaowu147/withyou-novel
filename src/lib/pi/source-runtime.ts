@@ -4,6 +4,19 @@ import type { AgentSession, AgentSessionEvent, ToolDefinition } from "@earendil-
 import { Type } from "typebox";
 
 import { appStateDir } from "@/lib/runtime/app-paths";
+import type { PromptPackageScope, ToolId } from "@/lib/prompts/prompt-package";
+import {
+  activateCoverPackage,
+  activateToolPackage,
+  activateWriterPackage,
+  deactivateCoverPackage,
+  deactivateToolPackage,
+  deactivateWriterPackage,
+  getActivatedPackages,
+  listPackages,
+  readPackage,
+  savePackage,
+} from "@/lib/prompts/prompt-store";
 
 import { createPiModelServices } from "./model";
 import { createCodingToolDefinitions } from "./coding-tools";
@@ -11,7 +24,15 @@ import type { PiRuntimeEvent } from "./runtime";
 import { requireSourceAccess } from "./source-permissions";
 import { createSourceProposal, resolveSourceFile } from "./source-proposal-store";
 import { ensureSourceMaintenanceSkill, SOURCE_MAINTENANCE_SKILL_INSTRUCTIONS } from "./source-skill";
-import { enabledSourceSkillPaths, sourceSkillFingerprint } from "./source-skill-manager";
+import {
+  enabledSourceSkillPaths,
+  installSourceSkill,
+  listSourceSkills,
+  readSourceSkillResource,
+  setSourceSkillEnabled,
+  sourceSkillFingerprint,
+} from "./source-skill-manager";
+import { downloadSourceSkillCatalogItem, searchSourceSkillCatalog, type SourceSkillCatalogItem } from "./source-skill-catalog";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -32,10 +53,13 @@ interface SourceRuntimeEntry {
 }
 
 const globalForSourcePi = globalThis as typeof globalThis & {
-  __withyouPiSourceSession?: Promise<SourceRuntimeEntry>;
+  __withyouPiSourceSessions?: Map<string, Promise<SourceRuntimeEntry>>;
 };
 
-const SOURCE_RUNTIME_POLICY_VERSION = 7;
+const sourceSessions = globalForSourcePi.__withyouPiSourceSessions ?? new Map<string, Promise<SourceRuntimeEntry>>();
+globalForSourcePi.__withyouPiSourceSessions = sourceSessions;
+
+const SOURCE_RUNTIME_POLICY_VERSION = 8;
 
 const SOURCE_SYSTEM_PROMPT = `你是 Pi，一个嵌入 WithYou Novel 的 coding Agent，负责维护当前代码工作区。
 
@@ -52,6 +76,8 @@ const SOURCE_SYSTEM_PROMPT = `你是 Pi，一个嵌入 WithYou Novel 的 coding 
 7. 涉及多个文件时逐个提出补丁，并说明它们之间的因果关系。
 8. 用户明确要求在桌面创建或更新文本文件时，使用桌面文件工具真实执行，不要回答没有权限。
 9. 回复使用自然中文，不要输出 Markdown 标题、星号、代码围栏、对勾或叉号等装饰符号。
+10. 当用户要求调整功能组件的提示词时，先用 prompt_list 或 prompt_read 理解现状；对当前绑定小说用 prompt_save 保存自定义包，再按需要用 prompt_activate 生效。内置包不可改写。
+11. 当用户要求寻找或安装 Skill 时，先用 source_skill_catalog_search 检索，再说明来源和审计状态；只有用户明确表示安装、使用或下载某个结果时才能调用 source_skill_catalog_install。Skill 仅会安装指令和文档资源，不能借此绕过命令、路径和密钥边界。
 
 ${SOURCE_MAINTENANCE_SKILL_INSTRUCTIONS}`;
 
@@ -192,7 +218,39 @@ function runCommand(
   };
 }
 
-function createSourceTools(pi: PiCodingAgentModule): ToolDefinition[] {
+const PROMPT_SCOPES = ["tool", "writer", "cover"] as const satisfies readonly PromptPackageScope[];
+const PROMPT_TOOL_IDS = [
+  "book-name",
+  "brainstorm",
+  "outline",
+  "detailed-outline",
+  "opening",
+  "character",
+  "worldview",
+  "goldfinger",
+  "synopsis",
+] as const satisfies readonly ToolId[];
+
+function requireBoundNovel(novelId: string | null): string {
+  if (!novelId) throw new Error("请先在当前工作区选择一本小说，Pi 才能管理该小说的提示词包");
+  return novelId;
+}
+
+function compactPromptPackage(pkg: ReturnType<typeof readPackage>) {
+  if (!pkg) return null;
+  return {
+    id: pkg.id,
+    name: pkg.name,
+    description: pkg.description,
+    scope: pkg.scope,
+    toolId: pkg.toolId,
+    version: pkg.version,
+    builtin: pkg.builtin === true,
+    systemPrompt: pkg.systemPrompt,
+  };
+}
+
+function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): ToolDefinition[] {
   const listFiles = pi.defineTool({
     name: "source_list_files",
     label: "查看源码文件",
@@ -303,6 +361,213 @@ function createSourceTools(pi: PiCodingAgentModule): ToolDefinition[] {
     },
   });
 
+  const promptList = pi.defineTool({
+    name: "prompt_list",
+    label: "查看提示词包",
+    description: "列出当前绑定小说可用的内置与自定义提示词包，以及当前激活状态。",
+    promptSnippet: "prompt_list: 查看当前小说提示词包",
+    parameters: Type.Object({ scope: Type.Optional(Type.Union(PROMPT_SCOPES.map((scope) => Type.Literal(scope)))) }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      const currentNovelId = requireBoundNovel(novelId);
+      const packages = listPackages(currentNovelId, params.scope).map((pkg) => compactPromptPackage(pkg));
+      return textResult(JSON.stringify({ packages, active: getActivatedPackages(currentNovelId) }, null, 2), { count: packages.length });
+    },
+  });
+
+  const promptRead = pi.defineTool({
+    name: "prompt_read",
+    label: "读取提示词包",
+    description: "读取当前绑定小说的一个提示词包；内置包可读但不可改写。",
+    promptSnippet: "prompt_read: 读取提示词包完整内容",
+    parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 160 }) }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      const pkg = compactPromptPackage(readPackage(requireBoundNovel(novelId), params.id));
+      if (!pkg) throw new Error("找不到该提示词包");
+      return textResult(JSON.stringify(pkg, null, 2), { id: pkg.id, builtin: pkg.builtin });
+    },
+  });
+
+  const promptSave = pi.defineTool({
+    name: "prompt_save",
+    label: "创建或更新提示词包",
+    description: "在当前绑定小说创建或更新自定义提示词包。更新前应先读取原包；内置包不可改写。",
+    promptSnippet: "prompt_save: 保存自定义提示词包",
+    promptGuidelines: ["更新现有包前必须调用 prompt_read", "仅在用户明确要求创建或修改提示词时调用"],
+    executionMode: "sequential",
+    parameters: Type.Object({
+      id: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
+      name: Type.String({ minLength: 1, maxLength: 120 }),
+      description: Type.String({ maxLength: 1_024 }),
+      scope: Type.Union(PROMPT_SCOPES.map((scope) => Type.Literal(scope))),
+      toolId: Type.Optional(Type.Union(PROMPT_TOOL_IDS.map((toolId) => Type.Literal(toolId)))),
+      systemPrompt: Type.String({ minLength: 1, maxLength: 40_000 }),
+      version: Type.Optional(Type.String({ maxLength: 64 })),
+    }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      const currentNovelId = requireBoundNovel(novelId);
+      const existing = params.id ? readPackage(currentNovelId, params.id) : null;
+      if (existing?.builtin) throw new Error("内置提示词包不可改写；请创建新的自定义包");
+      if (params.scope === "tool" && !params.toolId) throw new Error("功能区提示词包必须指定 toolId");
+      if (params.scope !== "tool" && params.toolId) throw new Error("writer 和 cover 提示词包不能指定 toolId");
+      const saved = savePackage(currentNovelId, {
+        id: params.id ?? "",
+        name: params.name.trim(),
+        description: params.description.trim(),
+        scope: params.scope,
+        toolId: params.scope === "tool" ? params.toolId : undefined,
+        systemPrompt: params.systemPrompt.trim(),
+        version: params.version?.trim() || existing?.version || "1.0.0",
+        builtin: false,
+        author: existing?.author ?? "Pi",
+        createdAt: existing?.createdAt,
+      });
+      return textResult(`提示词包已保存：${saved.name}（${saved.id}）`, { package: compactPromptPackage(saved) });
+    },
+  });
+
+  const promptActivate = pi.defineTool({
+    name: "prompt_activate",
+    label: "启用提示词包",
+    description: "为功能区、会话写手或封面启用一个已存在的提示词包。",
+    promptSnippet: "prompt_activate: 启用提示词包",
+    promptGuidelines: ["启用前必须调用 prompt_read", "仅在用户明确要求启用时调用"],
+    executionMode: "sequential",
+    parameters: Type.Object({
+      scope: Type.Union(PROMPT_SCOPES.map((scope) => Type.Literal(scope))),
+      id: Type.String({ minLength: 1, maxLength: 160 }),
+      toolId: Type.Optional(Type.Union(PROMPT_TOOL_IDS.map((toolId) => Type.Literal(toolId)))),
+    }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      const currentNovelId = requireBoundNovel(novelId);
+      const pkg = readPackage(currentNovelId, params.id);
+      if (!pkg || pkg.scope !== params.scope) throw new Error("提示词包不存在，或不属于指定区域");
+      if (params.scope === "tool") {
+        if (!params.toolId || pkg.toolId !== params.toolId) throw new Error("功能区提示词包与 toolId 不匹配");
+        activateToolPackage(currentNovelId, params.toolId, pkg.id);
+      } else if (params.scope === "writer") {
+        activateWriterPackage(currentNovelId, pkg.id);
+      } else {
+        activateCoverPackage(currentNovelId, pkg.id);
+      }
+      return textResult(`提示词包已启用：${pkg.name}`, { packageId: pkg.id, scope: params.scope, toolId: params.toolId });
+    },
+  });
+
+  const promptDeactivate = pi.defineTool({
+    name: "prompt_deactivate",
+    label: "停用提示词包",
+    description: "停用当前绑定小说某一区域的自定义激活提示词，不删除提示词包。",
+    promptSnippet: "prompt_deactivate: 停用提示词包",
+    promptGuidelines: ["仅在用户明确要求停用时调用"],
+    executionMode: "sequential",
+    parameters: Type.Object({
+      scope: Type.Union(PROMPT_SCOPES.map((scope) => Type.Literal(scope))),
+      toolId: Type.Optional(Type.Union(PROMPT_TOOL_IDS.map((toolId) => Type.Literal(toolId)))),
+    }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      const currentNovelId = requireBoundNovel(novelId);
+      if (params.scope === "tool") {
+        if (!params.toolId) throw new Error("停用功能区提示词必须指定 toolId");
+        deactivateToolPackage(currentNovelId, params.toolId);
+      } else if (params.scope === "writer") deactivateWriterPackage(currentNovelId);
+      else deactivateCoverPackage(currentNovelId);
+      return textResult("提示词包已停用", { scope: params.scope, toolId: params.toolId });
+    },
+  });
+
+  const catalogSearch = pi.defineTool({
+    name: "source_skill_catalog_search",
+    label: "检索 Skill 目录",
+    description: "从受限的可信目录检索可安装 Agent Skills。结果包含来源和可用审计信息。",
+    promptSnippet: "source_skill_catalog_search: 按自然语言寻找 Skill",
+    parameters: Type.Object({ query: Type.String({ minLength: 2, maxLength: 240 }), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })) }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      const results = await searchSourceSkillCatalog(params.query, params.limit ?? 8);
+      return textResult(JSON.stringify(results, null, 2), { count: results.length });
+    },
+  });
+
+  const catalogInstall = pi.defineTool({
+    name: "source_skill_catalog_install",
+    label: "下载并安装 Skill",
+    description: "将一个目录检索结果下载为本地 Skill，保留来源、内容哈希和受限文档资源；不会下载或执行脚本。",
+    promptSnippet: "source_skill_catalog_install: 从可信目录下载并安装 Skill",
+    promptGuidelines: ["必须先执行 source_skill_catalog_search", "只有用户明确要求安装、下载或使用该 Skill 时才能调用"],
+    executionMode: "sequential",
+    parameters: Type.Object({ item: Type.Object({
+      id: Type.String(), name: Type.String(), description: Type.String(),
+      source: Type.Object({ type: Type.Literal("remote"), uri: Type.String(), publisher: Type.String() }),
+      catalog: Type.Union([Type.Literal("skills.sh"), Type.Literal("github-curated")]),
+      catalogId: Type.Optional(Type.String()),
+      installCount: Type.Optional(Type.Number()),
+      audit: Type.Optional(Type.Object({
+        status: Type.Union([Type.Literal("pass"), Type.Literal("warn"), Type.Literal("fail"), Type.Literal("unavailable")]),
+        summary: Type.String(),
+      })),
+    }) }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      const bundle = await downloadSourceSkillCatalogItem(params.item as SourceSkillCatalogItem);
+      const installed = installSourceSkill({
+        id: bundle.id,
+        name: bundle.name,
+        description: bundle.description,
+        version: bundle.version,
+        content: bundle.content,
+        resources: bundle.resources,
+        source: bundle.source,
+        enabled: true,
+      });
+      return textResult(`Skill 已安装并启用：${installed.name}（${installed.id}）`, { skill: installed, resourceCount: bundle.resources.length });
+    },
+  });
+
+  const skillList = pi.defineTool({
+    name: "source_skill_list",
+    label: "查看已安装 Skill",
+    description: "查看当前 Pi 已安装的 Skill、来源、完整性与启用状态。",
+    promptSnippet: "source_skill_list: 查看已安装 Skill",
+    parameters: Type.Object({}),
+    execute: async () => {
+      requireSourceAccess();
+      const skills = listSourceSkills();
+      return textResult(JSON.stringify(skills, null, 2), { count: skills.length });
+    },
+  });
+
+  const skillReadResource = pi.defineTool({
+    name: "source_skill_read_resource",
+    label: "读取 Skill 文档资源",
+    description: "按需读取已安装且完整的 Skill 包中的文档或结构化资源。",
+    promptSnippet: "source_skill_read_resource: 读取 Skill 附带资源",
+    parameters: Type.Object({ id: Type.String(), path: Type.String() }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      return textResult(readSourceSkillResource(params.id, params.path), { id: params.id, path: params.path });
+    },
+  });
+
+  const skillToggle = pi.defineTool({
+    name: "source_skill_set_enabled",
+    label: "启用或停用 Skill",
+    description: "启用或停用已安装的 Skill；停用不会删除其文件。",
+    promptSnippet: "source_skill_set_enabled: 切换 Skill 状态",
+    promptGuidelines: ["仅在用户明确要求启用或停用时调用"],
+    executionMode: "sequential",
+    parameters: Type.Object({ id: Type.String(), enabled: Type.Boolean() }),
+    execute: async (_id, params) => {
+      requireSourceAccess();
+      const skill = setSourceSkillEnabled(params.id, params.enabled);
+      return textResult(`Skill 已${params.enabled ? "启用" : "停用"}：${skill.name}`, { skill });
+    },
+  });
+
   const listDesktop = pi.defineTool({
     name: "desktop_list_files",
     label: "查看桌面文本文件",
@@ -379,10 +644,15 @@ function createSourceTools(pi: PiCodingAgentModule): ToolDefinition[] {
     },
   });
 
-  return [listFiles, readFile, search, propose, runCheck, listDesktop, readDesktop, writeDesktop];
+  return [
+    listFiles, readFile, search, propose, runCheck,
+    promptList, promptRead, promptSave, promptActivate, promptDeactivate,
+    catalogSearch, catalogInstall, skillList, skillReadResource, skillToggle,
+    listDesktop, readDesktop, writeDesktop,
+  ];
 }
 
-async function createSourceRuntime(): Promise<SourceRuntimeEntry> {
+async function createSourceRuntime(workspaceId: string, novelId: string | null): Promise<SourceRuntimeEntry> {
   const workspace = requireSourceAccess();
   const services = await createPiModelServices();
   const pi = await loadPiCodingAgent();
@@ -412,8 +682,8 @@ async function createSourceRuntime(): Promise<SourceRuntimeEntry> {
     systemPrompt: SOURCE_SYSTEM_PROMPT,
   });
   await resourceLoader.reload();
-  const customTools = [...createSourceTools(pi), ...createCodingToolDefinitions(pi, workspace)];
-  const sessionDirectory = path.join(appStateDir(), "pi-source-sessions");
+  const customTools = [...createSourceTools(pi, novelId), ...createCodingToolDefinitions(pi, workspace)];
+  const sessionDirectory = path.join(appStateDir(), "pi-source-sessions", workspaceId, novelId ?? "unbound");
   const { session } = await pi.createAgentSession({
     cwd: workspace,
     agentDir,
@@ -429,28 +699,29 @@ async function createSourceRuntime(): Promise<SourceRuntimeEntry> {
   });
   return {
     session,
-    fingerprint: `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}:${sourceSkillFingerprint()}`,
+    fingerprint: `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}:${novelId ?? "unbound"}:${sourceSkillFingerprint()}`,
     workspace,
   };
 }
 
-async function getSourceRuntime(): Promise<SourceRuntimeEntry> {
+async function getSourceRuntime(workspaceId: string, novelId: string | null): Promise<SourceRuntimeEntry> {
   const workspace = requireSourceAccess();
   const { fingerprint } = await createPiModelServices();
-  const policyFingerprint = `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}:${sourceSkillFingerprint()}`;
-  const existing = globalForSourcePi.__withyouPiSourceSession;
+  const policyFingerprint = `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}:${novelId ?? "unbound"}:${sourceSkillFingerprint()}`;
+  const key = `${workspaceId}:${novelId ?? "unbound"}`;
+  const existing = sourceSessions.get(key);
   if (existing) {
     const entry = await existing;
     if (entry.workspace === workspace && entry.fingerprint === policyFingerprint) return entry;
     entry.session.dispose();
-    delete globalForSourcePi.__withyouPiSourceSession;
+    sourceSessions.delete(key);
   }
-  const pending = createSourceRuntime();
-  globalForSourcePi.__withyouPiSourceSession = pending;
+  const pending = createSourceRuntime(workspaceId, novelId);
+  sourceSessions.set(key, pending);
   try {
     return await pending;
   } catch (error) {
-    delete globalForSourcePi.__withyouPiSourceSession;
+    sourceSessions.delete(key);
     throw error;
   }
 }
@@ -480,9 +751,14 @@ function forwardEvent(event: AgentSessionEvent, emit: (event: PiRuntimeEvent) =>
   }
 }
 
-export async function promptSourcePi(message: string, emit: (event: PiRuntimeEvent) => void): Promise<void> {
+export async function promptSourcePi(
+  workspaceId: string,
+  novelId: string | null,
+  message: string,
+  emit: (event: PiRuntimeEvent) => void,
+): Promise<void> {
   requireSourceAccess();
-  const { session } = await getSourceRuntime();
+  const { session } = await getSourceRuntime(workspaceId, novelId);
   if (session.isStreaming) throw new Error("源码 Pi 正在处理上一项任务");
   const unsubscribe = session.subscribe((event) => forwardEvent(event, emit));
   try {
@@ -492,8 +768,8 @@ export async function promptSourcePi(message: string, emit: (event: PiRuntimeEve
   }
 }
 
-export async function abortSourcePi(): Promise<void> {
-  const existing = globalForSourcePi.__withyouPiSourceSession;
+export async function abortSourcePi(workspaceId: string, novelId: string | null): Promise<void> {
+  const existing = sourceSessions.get(`${workspaceId}:${novelId ?? "unbound"}`);
   if (!existing) return;
   const { session } = await existing;
   await session.abort();

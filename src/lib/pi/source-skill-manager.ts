@@ -9,7 +9,10 @@ import * as path from "node:path";
 const SKILL_ROOT_NAME = "pi-source-skills";
 const REGISTRY_FILE = "registry.json";
 const MAX_SKILL_BYTES = 64 * 1024;
+const MAX_RESOURCE_BYTES = 64 * 1024;
+const MAX_TOTAL_RESOURCE_BYTES = 256 * 1024;
 const SKILL_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const RESOURCE_EXTENSIONS = new Set([".md", ".txt", ".json", ".yaml", ".yml"]);
 
 export type SourceSkillIntegrity = "verified" | "local" | "mismatch" | "missing" | "invalid";
 
@@ -29,8 +32,15 @@ export interface SourceSkillRecord {
   contentHash: string;
   publicKey?: string;
   signature?: string;
+  resources?: SourceSkillResourceRecord[];
   installedAt: string;
   updatedAt: string;
+}
+
+export interface SourceSkillResourceRecord {
+  path: string;
+  contentHash: string;
+  bytes: number;
 }
 
 export interface SourceSkillView extends SourceSkillRecord {
@@ -47,6 +57,7 @@ export interface InstallSourceSkillInput {
   source?: SourceSkillSource;
   publicKey?: string;
   signature?: string;
+  resources?: Array<{ path: string; content: string }>;
   enabled?: boolean;
 }
 
@@ -64,6 +75,27 @@ function skillDirectory(id: string): string {
 
 function skillPath(id: string): string {
   return path.join(skillDirectory(id), "SKILL.md");
+}
+
+function resourceDirectory(id: string): string {
+  return path.join(skillDirectory(id), "resources");
+}
+
+function normalizeResourcePath(input: string): string {
+  const normalized = input.trim().replaceAll("\\", "/").replace(/^\/+/, "");
+  if (!normalized || normalized.split("/").some((segment) => !segment || segment === "." || segment === "..")) {
+    throw new Error("Skill 资源路径无效");
+  }
+  const extension = path.extname(normalized).toLowerCase();
+  if (!RESOURCE_EXTENSIONS.has(extension)) throw new Error("Skill 资源只允许 Markdown、文本或结构化数据文件");
+  return normalized;
+}
+
+function resourcePath(id: string, relativePath: string): string {
+  const root = resourceDirectory(id);
+  const target = path.resolve(root, normalizeResourcePath(relativePath));
+  if (!target.startsWith(`${path.resolve(root)}${path.sep}`)) throw new Error("Skill 资源路径超出安装目录");
+  return target;
 }
 
 function hashText(value: string): string {
@@ -109,6 +141,22 @@ function readRegistry(): SourceSkillRecord[] {
             contentHash,
             publicKey: parseText(value.publicKey) || undefined,
             signature: parseText(value.signature) || undefined,
+            resources: Array.isArray(value.resources)
+              ? value.resources.flatMap((resource) => {
+                  if (!resource || typeof resource !== "object") return [];
+                  const raw = resource as Record<string, unknown>;
+                  try {
+                    const resourcePathValue = normalizeResourcePath(parseText(raw.path));
+                    const resourceHash = parseText(raw.contentHash);
+                    const bytes = typeof raw.bytes === "number" && Number.isInteger(raw.bytes) ? raw.bytes : 0;
+                    return resourceHash && bytes >= 0 && bytes <= MAX_RESOURCE_BYTES
+                      ? [{ path: resourcePathValue, contentHash: resourceHash, bytes }]
+                      : [];
+                  } catch {
+                    return [];
+                  }
+                })
+              : [],
             installedAt: parseText(value.installedAt, new Date(0).toISOString()),
             updatedAt: parseText(value.updatedAt, new Date(0).toISOString()),
           },
@@ -164,6 +212,13 @@ function integrityFor(record: SourceSkillRecord): SourceSkillIntegrity {
     const content = fs.readFileSync(/* turbopackIgnore: true */ target, "utf8");
     if (Buffer.byteLength(content, "utf8") > MAX_SKILL_BYTES) return "invalid";
     if (hashText(content) !== record.contentHash) return "mismatch";
+    for (const resource of record.resources ?? []) {
+      const targetResource = resourcePath(record.id, resource.path);
+      if (!fs.existsSync(/* turbopackIgnore: true */ targetResource)) return "missing";
+      const resourceContent = fs.readFileSync(/* turbopackIgnore: true */ targetResource, "utf8");
+      if (Buffer.byteLength(resourceContent, "utf8") > MAX_RESOURCE_BYTES) return "invalid";
+      if (hashText(resourceContent) !== resource.contentHash) return "mismatch";
+    }
     if (record.signature || record.publicKey) {
       if (!record.signature || !record.publicKey) return "invalid";
       return verifySignature(content, record.publicKey, record.signature) ? "verified" : "invalid";
@@ -214,6 +269,18 @@ export function installSourceSkill(input: InstallSourceSkillInput): SourceSkillV
   if (input.publicKey && input.signature && !verifySignature(content, input.publicKey, input.signature)) {
     throw new Error("Skill 签名校验失败");
   }
+  const resourceContents = new Map<string, string>();
+  let resourceBytes = 0;
+  for (const resource of input.resources ?? []) {
+    const resourcePathValue = normalizeResourcePath(resource.path);
+    const resourceContent = resource.content.replace(/^\uFEFF/, "");
+    const bytes = Buffer.byteLength(resourceContent, "utf8");
+    if (!resourceContent.trim()) throw new Error(`Skill 资源不能为空：${resourcePathValue}`);
+    if (bytes > MAX_RESOURCE_BYTES) throw new Error(`Skill 单个资源不能超过 64KB：${resourcePathValue}`);
+    resourceBytes += bytes;
+    if (resourceBytes > MAX_TOTAL_RESOURCE_BYTES) throw new Error("Skill 资源总量不能超过 256KB");
+    resourceContents.set(resourcePathValue, resourceContent);
+  }
 
   const records = readRegistry();
   const previous = records.find((item) => item.id === id);
@@ -232,6 +299,11 @@ export function installSourceSkill(input: InstallSourceSkillInput): SourceSkillV
     contentHash: hashText(content),
     publicKey: input.publicKey?.trim() || undefined,
     signature: input.signature?.trim() || undefined,
+    resources: [...resourceContents.entries()].map(([resourcePathValue, resourceContent]) => ({
+      path: resourcePathValue,
+      contentHash: hashText(resourceContent),
+      bytes: Buffer.byteLength(resourceContent, "utf8"),
+    })),
     installedAt: previous?.installedAt ?? now,
     updatedAt: now,
   };
@@ -245,8 +317,32 @@ export function installSourceSkill(input: InstallSourceSkillInput): SourceSkillV
   fs.writeFileSync(/* turbopackIgnore: true */ temporary, content, "utf8");
   fs.copyFileSync(/* turbopackIgnore: true */ temporary, /* turbopackIgnore: true */ target);
   fs.unlinkSync(/* turbopackIgnore: true */ temporary);
+  for (const [resourcePathValue, resourceContent] of resourceContents) {
+    const targetResource = resourcePath(id, resourcePathValue);
+    fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(targetResource), { recursive: true });
+    const resourceTemporary = `${targetResource}.${process.pid}.tmp`;
+    fs.writeFileSync(/* turbopackIgnore: true */ resourceTemporary, resourceContent, "utf8");
+    fs.copyFileSync(/* turbopackIgnore: true */ resourceTemporary, /* turbopackIgnore: true */ targetResource);
+    fs.unlinkSync(/* turbopackIgnore: true */ resourceTemporary);
+  }
   writeRegistry([...records.filter((item) => item.id !== id), record]);
   return toView(record);
+}
+
+/** 读取已安装 Skill 的受控文档资源，供 Pi 在任务需要时按需加载。 */
+export function readSourceSkillResource(idInput: string, resourceInput: string): string {
+  const id = assertSkillId(idInput);
+  const resourcePathValue = normalizeResourcePath(resourceInput);
+  const record = readRegistry().find((item) => item.id === id);
+  if (!record) throw new Error("找不到该 Skill");
+  if (!record.enabled || !["local", "verified"].includes(integrityFor(record))) {
+    throw new Error("Skill 未启用或完整性校验未通过");
+  }
+  if (!(record.resources ?? []).some((resource) => resource.path === resourcePathValue)) {
+    throw new Error("该资源不在已登记的 Skill 包内");
+  }
+  const target = resourcePath(id, resourcePathValue);
+  return fs.readFileSync(/* turbopackIgnore: true */ target, "utf8");
 }
 
 export function setSourceSkillEnabled(idInput: string, enabled: boolean): SourceSkillView {

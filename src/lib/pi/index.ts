@@ -28,12 +28,20 @@ export {
   enabledSourceSkillPaths,
   installSourceSkill,
   listSourceSkills,
+  readSourceSkillResource,
   setSourceSkillEnabled,
   sourceSkillFingerprint,
   uninstallSourceSkill,
   type InstallSourceSkillInput,
   type SourceSkillIntegrity,
   type SourceSkillRecord,
+  type SourceSkillResourceRecord,
   type SourceSkillSource,
   type SourceSkillView,
 } from "./source-skill-manager";
+export {
+  downloadSourceSkillCatalogItem,
+  searchSourceSkillCatalog,
+  type SourceSkillCatalogBundle,
+  type SourceSkillCatalogItem,
+} from "./source-skill-catalog";
