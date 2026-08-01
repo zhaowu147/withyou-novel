@@ -45,8 +45,6 @@ const faqs = [
   { q: "能写多长？", a: "目前验证过百万字级别的连载。AI 会跟踪已写章节的上下文，保证前后逻辑一致。" },
 ];
 
-const glassPrimaryCtaClassName =
-  "cursor-pointer rounded-lg border border-[#7BE0A1]/55 bg-[#2D9F5A]/25 font-semibold text-sm text-white shadow-[0_8px_24px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.2)] backdrop-blur-md transition-all hover:border-[#9BE8B6]/80 hover:bg-[#2D9F5A]/40 hover:shadow-[0_0_30px_rgba(45,159,90,0.32),inset_0_1px_0_rgba(255,255,255,0.28)]";
 const featureCtaClassName =
   "cursor-pointer rounded-lg border border-white/12 bg-white/5 font-medium text-sm text-white transition-colors hover:bg-white/10";
 
@@ -79,7 +77,7 @@ export default function LandingPage() {
           </Link>
           <Link
             href={AUTH_ROUTES.register}
-            className={`${glassPrimaryCtaClassName} px-4 py-2`}
+            className={`${featureCtaClassName} px-4 py-2`}
           >
             免费试用
           </Link>
