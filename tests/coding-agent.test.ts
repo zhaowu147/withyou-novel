@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { getCodingEnvironmentStatus } from "../src/lib/pi/coding-environment";
-import { validateCodingCommand } from "../src/lib/pi/coding-tools";
+import { validateCodingCommand, validateGitHubRepository } from "../src/lib/pi/coding-tools";
 import { getSourceAccessStatus, SOURCE_UNLOCK_PHRASE } from "../src/lib/pi/source-permissions";
 
 test("coding environment reports tool inventory without exposing environment values", () => {
@@ -18,6 +18,13 @@ test("coding command policy allows project checks and blocks destructive shell e
   assert.throws(() => validateCodingCommand("powershell -Command Get-ChildItem"));
   assert.throws(() => validateCodingCommand("git reset --hard HEAD"));
   assert.throws(() => validateCodingCommand("pnpm test > result.txt"));
+  assert.throws(() => validateCodingCommand("git push"));
+});
+
+test("GitHub tools accept repository identifiers without allowing argument injection", () => {
+  assert.equal(validateGitHubRepository("owner/repository"), "owner/repository");
+  assert.throws(() => validateGitHubRepository("owner/repository --web"));
+  assert.throws(() => validateGitHubRepository("../repository"));
 });
 
 test("Pi coding Agent is available without a third-tier unlock", () => {

@@ -59,7 +59,7 @@ const globalForSourcePi = globalThis as typeof globalThis & {
 const sourceSessions = globalForSourcePi.__withyouPiSourceSessions ?? new Map<string, Promise<SourceRuntimeEntry>>();
 globalForSourcePi.__withyouPiSourceSessions = sourceSessions;
 
-const SOURCE_RUNTIME_POLICY_VERSION = 8;
+const SOURCE_RUNTIME_POLICY_VERSION = 9;
 
 const SOURCE_SYSTEM_PROMPT = `你是 Pi，一个嵌入 WithYou Novel 的 coding Agent，负责维护当前代码工作区。
 
@@ -78,6 +78,7 @@ const SOURCE_SYSTEM_PROMPT = `你是 Pi，一个嵌入 WithYou Novel 的 coding 
 9. 回复使用自然中文，不要输出 Markdown 标题、星号、代码围栏、对勾或叉号等装饰符号。
 10. 当用户要求调整功能组件的提示词时，先用 prompt_list 或 prompt_read 理解现状；对当前绑定小说用 prompt_save 保存自定义包，再按需要用 prompt_activate 生效。内置包不可改写。
 11. 当用户要求寻找或安装 Skill 时，先用 source_skill_catalog_search 检索，再说明来源和审计状态；只有用户明确表示安装、使用或下载某个结果时才能调用 source_skill_catalog_install。Skill 仅会安装指令和文档资源，不能借此绕过命令、路径和密钥边界。
+12. Git 与 GitHub 任务先使用 git_repository_status 或 github_connection_status 核实状态。用户明确要求提交时才调用 git_commit，明确要求推送时才调用 git_push；GitHub 仓库或代码检索直接使用 github_search_repositories、github_search_code、github_repository_view，不要让用户改去浏览器完成。
 
 ${SOURCE_MAINTENANCE_SKILL_INSTRUCTIONS}`;
 

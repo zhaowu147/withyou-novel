@@ -12,7 +12,9 @@ export const SOURCE_MAINTENANCE_SKILL_INSTRUCTIONS = `Pi coding Agent 工作区 
 5. 需要了解桌面现有文件时使用 desktop_list_files；读取文本时使用 desktop_read_text_file。
 6. 不虚构工具执行结果，不把“没有任意 Shell”误解为所有本机操作都不可执行。
 7. 小说内容与代码工作区保持事实隔离，不要把小说记忆或密钥带入代码任务。
-8. 密钥、环境变量和认证文件不向模型暴露。`;
+8. 密钥、环境变量和认证文件不向模型暴露。
+9. Git 任务先用 git_repository_status 核实工作区。只有用户明确要求时才使用 git_commit 或 git_push，提交时只传入当前任务相关的文件路径。
+10. GitHub 仓库和代码检索直接使用 github_search_repositories、github_search_code、github_repository_view；GitHub CLI 的凭据由系统处理，绝不要求用户在对话里粘贴令牌，也不要把检索工作推给浏览器。`;
 
 export function ensureSourceMaintenanceSkill(agentDir: string): string {
   const skillDir = path.join(agentDir, "skills", "withyou-source-maintenance");

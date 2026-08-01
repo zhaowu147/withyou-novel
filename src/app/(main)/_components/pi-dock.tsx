@@ -9,7 +9,6 @@ import {
   ChevronDown,
   ChevronUp,
   CircleStop,
-  Code2,
   FilePenLine,
   GripVertical,
   Loader2,
@@ -25,7 +24,6 @@ import type { PiFileProposal } from "@/lib/pi/proposal-store";
 import type { PiSourceProposal } from "@/lib/pi/source-proposal-store";
 import { readableApiError, workspaceFetch } from "@/lib/workspaces/client";
 
-type AccessLevel = "source";
 type DisplayProposal = PiFileProposal | PiSourceProposal;
 
 interface SourceAccessStatus {
@@ -35,13 +33,6 @@ interface SourceAccessStatus {
   expiresAt: string | null;
   testMode?: boolean;
   reason?: string;
-}
-
-interface CodingEnvironmentStatus {
-  ready: boolean;
-  checkedAt: string;
-  tools: Array<{ name: string; available: boolean; version?: string; minimum?: string }>;
-  project?: { packageManager?: string; dependenciesInstalled: boolean; pythonEnvironment?: string };
 }
 
 interface PiMessage {
@@ -125,15 +116,12 @@ export function PiDock() {
   const [novelId, setNovelId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
-  const [accessLevel] = useState<AccessLevel>("source");
   const [messages, setMessages] = useState<PiMessage[]>([]);
   const [activities, setActivities] = useState<PiToolActivity[]>([]);
   const [proposals, setProposals] = useState<DisplayProposal[]>([]);
   const [expandedProposal, setExpandedProposal] = useState<string | null>(null);
   const [sourceStatus, setSourceStatus] = useState<SourceAccessStatus | null>(null);
   const [sourceGrantToken, setSourceGrantToken] = useState("");
-  const [environmentStatus, setEnvironmentStatus] = useState<CodingEnvironmentStatus | null>(null);
-  const [installingEnvironment, setInstallingEnvironment] = useState(false);
   const [dockPosition, setDockPosition] = useState<DockPosition | null>(null);
   const assistantIdRef = useRef<string | null>(null);
   const dockButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -143,6 +131,7 @@ export function PiDock() {
   const snapshotRef = useRef<PiWorkspaceState>({ input: "", messages: [], activities: [] });
   const requestGenerationRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
+  const conversationRef = useRef<HTMLDivElement | null>(null);
 
   const clampDockPosition = useCallback((position: DockPosition): DockPosition => {
     const rect = dockButtonRef.current?.getBoundingClientRect();
@@ -238,7 +227,7 @@ export function PiDock() {
     savePiWorkspaceState(scopeRef.current, snapshotRef.current);
   }, [activities, input, messages]);
 
-  const switchPiScope = useCallback((nextWorkspaceId: string | null, _nextLevel: AccessLevel = "source") => {
+  const switchPiScope = useCallback((nextWorkspaceId: string | null) => {
     savePiWorkspaceState(scopeRef.current, snapshotRef.current);
     const nextScope = `coding:${nextWorkspaceId ?? "unbound"}`;
     scopeRef.current = nextScope;
@@ -259,7 +248,7 @@ export function PiDock() {
       requestAbortRef.current = null;
       assistantIdRef.current = null;
       setRunning(false);
-      switchPiScope(next.workspaceId, "source");
+      switchPiScope(next.workspaceId);
     }
     setWorkspaceId(next.workspaceId);
     setNovelId(next.novelId);
@@ -289,36 +278,6 @@ export function PiDock() {
     if (response.ok && json.success) setSourceStatus(json.data);
   }, [sourceFetch]);
 
-  const loadEnvironmentStatus = useCallback(async () => {
-    if (accessLevel !== "source" || !sourceStatus?.unlocked) {
-      setEnvironmentStatus(null);
-      return;
-    }
-    try {
-      const response = await sourceFetch("/api/pi/environment");
-      const json = await response.json();
-      if (response.ok && json.success) setEnvironmentStatus(json.data);
-    } catch {
-      setEnvironmentStatus(null);
-    }
-  }, [accessLevel, sourceFetch, sourceStatus?.unlocked]);
-
-  const installEnvironment = useCallback(async () => {
-    setInstallingEnvironment(true);
-    try {
-      const response = await sourceFetch("/api/pi/environment", { method: "POST" });
-      const json = await response.json();
-      if (!response.ok || !json.success) throw new Error(json.error || "编程环境安装失败");
-      setEnvironmentStatus(json.data.status);
-      const action = json.data.requiresUserAction?.[0];
-      toast[action ? "warning" : "success"](action || "编程环境与项目依赖检查完成");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "编程环境安装失败");
-    } finally {
-      setInstallingEnvironment(false);
-    }
-  }, [sourceFetch]);
-
   const loadProposals = useCallback(async () => {
     const response = await sourceFetch("/api/pi/source/proposals");
     const json = await response.json();
@@ -332,11 +291,16 @@ export function PiDock() {
     }
   }, [loadProposals, loadSourceStatus, open]);
 
-  useEffect(() => {
-    if (open && accessLevel === "source") void loadEnvironmentStatus();
-  }, [accessLevel, loadEnvironmentStatus, open]);
-
   const pendingCount = useMemo(() => proposals.filter((proposal) => proposal.status === "pending").length, [proposals]);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      const conversation = conversationRef.current;
+      if (conversation) conversation.scrollTop = conversation.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activities, messages, open, proposals, running]);
 
   const appendAssistant = useCallback((text: string, generation?: number) => {
     if (generation !== undefined && requestGenerationRef.current !== generation) return;
@@ -517,39 +481,15 @@ export function PiDock() {
               </button>
             </header>
 
-            <div className="border-b px-5 py-3">
-              <div className="flex items-center gap-2 rounded-lg border bg-accent/40 p-3">
-                <Code2 className="size-4" />
-                <div>
-                  <p className="font-medium text-xs">默认 coding Agent</p>
-                  <p className="mt-1 text-[10px] text-muted-foreground">直接理解代码、运行项目检查并提出可审阅补丁</p>
-                </div>
-              </div>
-              <div className="mt-2 flex items-center justify-between rounded-md bg-muted/50 px-2.5 py-1.5 text-[11px]">
-                <span>
-                  编程环境：{environmentStatus ? (environmentStatus.ready ? "已就绪" : "待补齐") : "检查中"}
-                  {environmentStatus?.project && !environmentStatus.project.dependenciesInstalled ? " · 项目依赖未安装" : ""}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void installEnvironment()}
-                  disabled={installingEnvironment}
-                  className="font-medium hover:underline disabled:opacity-50"
-                >
-                  {installingEnvironment ? "安装中…" : "安装/检查"}
-                </button>
-              </div>
-            </div>
-
-            <div className="flex-1 space-y-5 overflow-y-auto p-5">
+            <div ref={conversationRef} className="flex-1 space-y-5 overflow-y-auto p-5">
               {messages.length === 0 && (
                 <div className="rounded-xl border bg-muted/30 p-4">
                   <div className="flex items-center gap-2 font-medium text-sm">
                     <Sparkles className="size-4" />
-                    "我就是当前项目的 coding Agent"
+                    Pi 可以直接处理当前项目
                   </div>
                   <p className="mt-2 text-muted-foreground text-xs leading-5">
-                    "Pi 会先读取并理解代码，再运行受控的开发命令；修改以可审阅补丁呈现，批准后才写入。软约束用于指导身份和协作方式，路径、命令和敏感信息边界仍由系统硬性执行。"
+                    Pi 会先读取并理解代码，再运行受控的开发命令。它可检查和操作当前 Git 仓库、检索 GitHub 仓库与代码；代码改动以可审阅补丁呈现。
                   </p>
                 </div>
               )}
@@ -643,9 +583,7 @@ export function PiDock() {
                                 <button
                                   type="button"
                                   onClick={() => void decide(proposal.id, "apply")}
-                                  className={`rounded-md px-3 py-1.5 text-white text-xs ${
-                                    accessLevel === "source" ? "bg-red-600" : "bg-foreground"
-                                  }`}
+                                  className="rounded-md bg-red-600 px-3 py-1.5 text-white text-xs"
                                 >
                                   批准、写入并检查
                                 </button>
@@ -670,7 +608,7 @@ export function PiDock() {
                                 )}
                                 <div className="flex items-center justify-end gap-2">
                                   <span className="text-muted-foreground text-xs">状态：{proposal.status}</span>
-                                  {accessLevel === "source" && proposal.status === "applied" && (
+                                  {proposal.status === "applied" && (
                                     <button
                                       type="button"
                                       onClick={() => void decide(proposal.id, "rollback")}
@@ -726,7 +664,7 @@ export function PiDock() {
                 )}
               </div>
               <p className="mt-2 text-center text-[11px] text-muted-foreground">
-                默认 coding Agent · 受控命令 · 代码补丁需批准 · 自动保留检查点
+                受控命令 · Git 与 GitHub · 代码补丁需批准 · 自动保留检查点
               </p>
             </footer>
           </aside>

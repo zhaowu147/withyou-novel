@@ -1,0 +1,58 @@
+id: CHG-2026-013
+area: pi-git-ui-follow
+title: Pi GitHub 仓库能力与对话面板跟随修复
+status: completed
+base: disk-2026-08-01
+revision: 1
+disk_baseline: 默认 Pi 具备受控本地 git 命令，但系统提示没有 GitHub 仓库工具；Pi 面板始终展示 coding Agent 与编程环境状态区，消息容器没有自动滚动到最新内容。
+areas:
+  - pi-source-runtime
+  - pi-coding-tools
+  - pi-ui
+  - coding-environment
+scope:
+  - src/lib/pi/coding-tools.ts
+  - src/lib/pi/source-runtime.ts
+  - src/lib/pi/source-skill.ts
+  - src/lib/pi/coding-environment.ts
+  - src/app/(main)/_components/pi-dock.tsx
+  - tests/coding-agent.test.ts
+  - .project/current.yaml
+goals:
+  - 为 Pi 提供受控的 Git 仓库状态、提交、推送和 GitHub 仓库/代码检索能力
+  - 不向模型暴露 GitHub 令牌、凭据或环境变量；写入远端仅响应用户明确请求
+  - 去除 Pi 面板冗余的默认 Agent 与环境检查常驻区
+  - 消息发送、流式追加、工具活动和候选补丁变化后让面板跟随到最新位置
+validation:
+  status: passed
+  plan:
+    - Git/GitHub 工具策略单元测试
+    - Node 22+ 类型检查与相关 Pi 测试
+    - 本地开发页与 Pi 面板交互核对
+expected_files:
+  - src/lib/pi/coding-tools.ts
+  - src/lib/pi/source-runtime.ts
+  - src/lib/pi/source-skill.ts
+  - src/lib/pi/coding-environment.ts
+  - src/app/(main)/_components/pi-dock.tsx
+  - tests/coding-agent.test.ts
+actual_files:
+  - src/lib/pi/coding-tools.ts
+  - src/lib/pi/source-runtime.ts
+  - src/lib/pi/source-skill.ts
+  - src/app/(main)/_components/pi-dock.tsx
+  - tests/coding-agent.test.ts
+  - .project/current.yaml
+validation_results:
+  - Node 24.14.0: TypeScript noEmit passed
+  - Node 24.14.0: full test suite passed (154 passed, 0 failed, 1 Windows symlink test skipped)
+  - Node 24.14.0: Next production build passed
+  - Local dev page: Pi top persistent Agent/environment area removed; new Git/GitHub capability copy is present
+  - GitHub CLI: authenticated repository search succeeded; transient GitHub API EOF occurred during repository detail/code search probes
+actual_scope_notes:
+  - Added direct executable Git and GitHub CLI tools with sanitized environment and output redaction; credentials remain in the operating system credential store.
+  - Git commits stage only explicit safe paths and refuse to proceed when the existing staged set contains unrelated files. Push and commit are prompt-limited to explicit user requests.
+  - Kept the environment API for compatibility but removed its Pi dock query and UI controls.
+  - Scrolling follows user messages, streamed text, tool activity, and proposal updates whenever Pi is open.
+unresolved:
+  - GitHub repository detail and code search depend on GitHub API availability; the local CLI reported transient EOF during direct probes, which Pi will return as a real tool error rather than fabricating a result.
