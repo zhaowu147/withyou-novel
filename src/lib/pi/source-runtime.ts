@@ -3,7 +3,6 @@ import "server-only";
 import type { AgentSession, AgentSessionEvent, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { appStateDir } from "@/lib/runtime/app-paths";
 import type { PromptPackageScope, ToolId } from "@/lib/prompts/prompt-package";
 import {
   activateCoverPackage,
@@ -17,13 +16,20 @@ import {
   readPackage,
   savePackage,
 } from "@/lib/prompts/prompt-store";
+import { appStateDir } from "@/lib/runtime/app-paths";
 
-import { createPiModelServices } from "./model";
+import { resolveProjectPackageManager } from "./coding-environment";
 import { createCodingToolDefinitions } from "./coding-tools";
+import { createPiModelServices } from "./model";
 import type { PiRuntimeEvent } from "./runtime";
 import { requireSourceAccess } from "./source-permissions";
 import { createSourceProposal, decideSourceProposal, resolveSourceFile } from "./source-proposal-store";
 import { ensureSourceMaintenanceSkill, SOURCE_MAINTENANCE_SKILL_INSTRUCTIONS } from "./source-skill";
+import {
+  downloadSourceSkillCatalogItem,
+  type SourceSkillCatalogItem,
+  searchSourceSkillCatalog,
+} from "./source-skill-catalog";
 import {
   enabledSourceSkillPaths,
   installSourceSkill,
@@ -32,7 +38,6 @@ import {
   setSourceSkillEnabled,
   sourceSkillFingerprint,
 } from "./source-skill-manager";
-import { downloadSourceSkillCatalogItem, searchSourceSkillCatalog, type SourceSkillCatalogItem } from "./source-skill-catalog";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -194,10 +199,25 @@ function runCommand(
   workspace: string,
   command: "typecheck" | "build" | "git_status" | "git_diff",
 ): { ok: boolean; output: string } {
-  const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+  const packageManager = resolveProjectPackageManager(workspace);
   const definitions = {
-    typecheck: { executable: pnpm, args: ["exec", "tsc", "--noEmit"], timeout: 120_000 },
-    build: { executable: pnpm, args: ["build"], timeout: 300_000 },
+    typecheck: packageManager
+      ? {
+          executable: packageManager.executable,
+          args:
+            packageManager.manager === "npm"
+              ? ["exec", "--", "tsc", "--noEmit"]
+              : [...packageManager.prefixArgs, "exec", "tsc", "--noEmit"],
+          timeout: 120_000,
+        }
+      : undefined,
+    build: packageManager
+      ? {
+          executable: packageManager.executable,
+          args: packageManager.manager === "npm" ? ["run", "build"] : [...packageManager.prefixArgs, "build"],
+          timeout: 300_000,
+        }
+      : undefined,
     git_status: { executable: "git", args: ["status", "--short"], timeout: 20_000 },
     git_diff: {
       executable: "git",
@@ -206,6 +226,9 @@ function runCommand(
     },
   } as const;
   const selected = definitions[command];
+  if (!selected) {
+    return { ok: false, output: "未找到 pnpm、npm 或可用的 Corepack，请先运行 coding_environment_prepare" };
+  }
   const result = spawnSync(selected.executable, [...selected.args], {
     cwd: workspace,
     encoding: "utf8",
@@ -295,10 +318,7 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
       const query = params.query.toLocaleLowerCase();
       const matches: string[] = [];
       for (const file of sourceFiles(workspace, params.prefix ?? "")) {
-        const content = fs.readFileSync(
-          /* turbopackIgnore: true */ resolveSourceFile(workspace, file),
-          "utf8",
-        );
+        const content = fs.readFileSync(/* turbopackIgnore: true */ resolveSourceFile(workspace, file), "utf8");
         for (const [index, line] of content.split(/\r?\n/).entries()) {
           if (!line.toLocaleLowerCase().includes(query)) continue;
           matches.push(`${file}:${index + 1}: ${line.slice(0, 260)}`);
@@ -332,11 +352,14 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
         summary: params.summary,
       });
       const applied = decideSourceProposal(proposal.id, "apply");
-      return textResult(`源码已应用：${applied.filePath}\n检查点 ID：${applied.id}\n自动检查：${applied.validation?.ok ? "通过" : "失败"}\n${applied.validation?.output ?? "未运行检查"}`, {
-        proposalId: applied.id,
-        filePath: applied.filePath,
-        validation: applied.validation,
-      });
+      return textResult(
+        `源码已应用：${applied.filePath}\n检查点 ID：${applied.id}\n自动检查：${applied.validation?.ok ? "通过" : "失败"}\n${applied.validation?.output ?? "未运行检查"}`,
+        {
+          proposalId: applied.id,
+          filePath: applied.filePath,
+          validation: applied.validation,
+        },
+      );
     },
   });
 
@@ -374,7 +397,9 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
       requireSourceAccess();
       const currentNovelId = requireBoundNovel(novelId);
       const packages = listPackages(currentNovelId, params.scope).map((pkg) => compactPromptPackage(pkg));
-      return textResult(JSON.stringify({ packages, active: getActivatedPackages(currentNovelId) }, null, 2), { count: packages.length });
+      return textResult(JSON.stringify({ packages, active: getActivatedPackages(currentNovelId) }, null, 2), {
+        count: packages.length,
+      });
     },
   });
 
@@ -456,7 +481,11 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
       } else {
         activateCoverPackage(currentNovelId, pkg.id);
       }
-      return textResult(`提示词包已启用：${pkg.name}`, { packageId: pkg.id, scope: params.scope, toolId: params.toolId });
+      return textResult(`提示词包已启用：${pkg.name}`, {
+        packageId: pkg.id,
+        scope: params.scope,
+        toolId: params.toolId,
+      });
     },
   });
 
@@ -488,7 +517,10 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
     label: "检索 Skill 目录",
     description: "从受限的可信目录检索可安装 Agent Skills。结果包含来源和可用审计信息。",
     promptSnippet: "source_skill_catalog_search: 按自然语言寻找 Skill",
-    parameters: Type.Object({ query: Type.String({ minLength: 2, maxLength: 240 }), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })) }),
+    parameters: Type.Object({
+      query: Type.String({ minLength: 2, maxLength: 240 }),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })),
+    }),
     execute: async (_id, params) => {
       requireSourceAccess();
       const results = await searchSourceSkillCatalog(params.query, params.limit ?? 8);
@@ -503,17 +535,28 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
     promptSnippet: "source_skill_catalog_install: 从可信目录下载并安装 Skill",
     promptGuidelines: ["必须先执行 source_skill_catalog_search", "只有用户明确要求安装、下载或使用该 Skill 时才能调用"],
     executionMode: "sequential",
-    parameters: Type.Object({ item: Type.Object({
-      id: Type.String(), name: Type.String(), description: Type.String(),
-      source: Type.Object({ type: Type.Literal("remote"), uri: Type.String(), publisher: Type.String() }),
-      catalog: Type.Union([Type.Literal("skills.sh"), Type.Literal("github-curated")]),
-      catalogId: Type.Optional(Type.String()),
-      installCount: Type.Optional(Type.Number()),
-      audit: Type.Optional(Type.Object({
-        status: Type.Union([Type.Literal("pass"), Type.Literal("warn"), Type.Literal("fail"), Type.Literal("unavailable")]),
-        summary: Type.String(),
-      })),
-    }) }),
+    parameters: Type.Object({
+      item: Type.Object({
+        id: Type.String(),
+        name: Type.String(),
+        description: Type.String(),
+        source: Type.Object({ type: Type.Literal("remote"), uri: Type.String(), publisher: Type.String() }),
+        catalog: Type.Union([Type.Literal("skills.sh"), Type.Literal("github-curated")]),
+        catalogId: Type.Optional(Type.String()),
+        installCount: Type.Optional(Type.Number()),
+        audit: Type.Optional(
+          Type.Object({
+            status: Type.Union([
+              Type.Literal("pass"),
+              Type.Literal("warn"),
+              Type.Literal("fail"),
+              Type.Literal("unavailable"),
+            ]),
+            summary: Type.String(),
+          }),
+        ),
+      }),
+    }),
     execute: async (_id, params) => {
       requireSourceAccess();
       const bundle = await downloadSourceSkillCatalogItem(params.item as SourceSkillCatalogItem);
@@ -527,7 +570,10 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
         source: bundle.source,
         enabled: true,
       });
-      return textResult(`Skill 已安装并启用：${installed.name}（${installed.id}）`, { skill: installed, resourceCount: bundle.resources.length });
+      return textResult(`Skill 已安装并启用：${installed.name}（${installed.id}）`, {
+        skill: installed,
+        resourceCount: bundle.resources.length,
+      });
     },
   });
 
@@ -628,10 +674,7 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
       if (exists) {
         const temporary = `${target}.${process.pid}.pi.tmp`;
         fs.writeFileSync(/* turbopackIgnore: true */ temporary, params.content, "utf8");
-        fs.copyFileSync(
-          /* turbopackIgnore: true */ temporary,
-          /* turbopackIgnore: true */ target,
-        );
+        fs.copyFileSync(/* turbopackIgnore: true */ temporary, /* turbopackIgnore: true */ target);
         fs.unlinkSync(/* turbopackIgnore: true */ temporary);
       } else {
         fs.writeFileSync(/* turbopackIgnore: true */ target, params.content, {
@@ -648,10 +691,24 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
   });
 
   return [
-    listFiles, readFile, search, propose, runCheck,
-    promptList, promptRead, promptSave, promptActivate, promptDeactivate,
-    catalogSearch, catalogInstall, skillList, skillReadResource, skillToggle,
-    listDesktop, readDesktop, writeDesktop,
+    listFiles,
+    readFile,
+    search,
+    propose,
+    runCheck,
+    promptList,
+    promptRead,
+    promptSave,
+    promptActivate,
+    promptDeactivate,
+    catalogSearch,
+    catalogInstall,
+    skillList,
+    skillReadResource,
+    skillToggle,
+    listDesktop,
+    readDesktop,
+    writeDesktop,
   ];
 }
 

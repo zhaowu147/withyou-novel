@@ -1,5 +1,6 @@
 import "server-only";
 
+import { resolveProjectPackageManager } from "./coding-environment";
 import { requireSourceAccess } from "./source-permissions";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -94,9 +95,7 @@ function readAll(): PiSourceProposal[] {
   const file = storeFile();
   try {
     if (!fs.existsSync(/* turbopackIgnore: true */ file)) return [];
-    const parsed = JSON.parse(
-      fs.readFileSync(/* turbopackIgnore: true */ file, "utf8"),
-    ) as PiSourceProposal[];
+    const parsed = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ file, "utf8")) as PiSourceProposal[];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
@@ -119,9 +118,7 @@ export function createSourceProposal(input: {
   const workspace = requireSourceAccess();
   const target = resolveSourceFile(workspace, input.filePath);
   const existedBefore = fs.existsSync(/* turbopackIgnore: true */ target);
-  const previousContent = existedBefore
-    ? fs.readFileSync(/* turbopackIgnore: true */ target, "utf8")
-    : "";
+  const previousContent = existedBefore ? fs.readFileSync(/* turbopackIgnore: true */ target, "utf8") : "";
   const proposal: PiSourceProposal = {
     id: randomUUID(),
     filePath: path.relative(workspace, target).replaceAll("\\", "/"),
@@ -156,8 +153,19 @@ function git(workspace: string, args: string[], input?: string): string {
 }
 
 function runTypecheck(workspace: string): PiSourceProposal["validation"] {
-  const executable = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  const result = spawnSync(executable, ["exec", "tsc", "--noEmit"], {
+  const packageManager = resolveProjectPackageManager(workspace);
+  if (!packageManager) {
+    return {
+      command: "未找到项目包管理器，未执行类型检查",
+      ok: false,
+      output: "未找到 pnpm、npm 或可用的 Corepack，源码已保留但需要先准备开发环境",
+    };
+  }
+  const args =
+    packageManager.manager === "npm"
+      ? ["exec", "--", "tsc", "--noEmit"]
+      : [...packageManager.prefixArgs, "exec", "tsc", "--noEmit"];
+  const result = spawnSync(packageManager.executable, args, {
     cwd: workspace,
     encoding: "utf8",
     timeout: 120_000,
@@ -165,7 +173,7 @@ function runTypecheck(workspace: string): PiSourceProposal["validation"] {
   });
   const output = `${result.stdout || ""}${result.stderr || ""}`.trim().slice(-12_000);
   return {
-    command: "pnpm exec tsc --noEmit",
+    command: `${packageManager.displayName} ${args.slice(packageManager.prefixArgs.length).join(" ")}`,
     ok: result.status === 0,
     output: output || (result.status === 0 ? "类型检查通过" : "类型检查失败"),
   };

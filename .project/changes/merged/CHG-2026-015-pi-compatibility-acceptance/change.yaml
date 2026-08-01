@@ -1,0 +1,53 @@
+id: CHG-2026-015
+area: pi-compatibility-acceptance
+title: Pi 通用 Coding Agent 兼容性与容错验收
+status: completed
+base: disk-2026-08-01
+revision: 1
+disk_baseline: Pi 已具备通用源码工具、受控命令、环境准备、Git/GitHub 和任意 GitHub SKILL.md 安装能力；当前验证需补齐包管理器兼容、环境扫描异常处理和可重复验收。
+areas:
+  - pi-runtime
+  - pi-coding-tools
+  - pi-environment
+  - pi-skills
+  - pi-validation
+scope:
+  - src/lib/pi/coding-environment.ts
+  - src/lib/pi/source-proposal-store.ts
+  - src/lib/pi/source-runtime.ts
+  - src/lib/pi/coding-tools.ts
+  - tests/coding-agent.test.ts
+  - .project/current.yaml
+goals:
+  - 不把源码检查和可回滚修改绑定到单一包管理器
+  - 对 pnpm、npm 和 Corepack 项目提供兼容的依赖准备与验证结果
+  - 环境扫描、安装失败和路径异常均返回可理解的容错结果，不丢失真实原因
+  - 验证 Pi 的四项基础 coding 能力、Git/GitHub 及跨行业 Skill 工作流
+constraints:
+  - 只修改 Pi 相关代码和测试，不接入小说或其他业务 API
+  - 不触碰工作区已有无关未提交改动
+  - 不自动执行远程 Skill 中的脚本或二进制
+validation:
+  status: passed
+  plan:
+    - Node 24 类型检查和 Pi 目标 lint
+    - Pi 相关全量测试
+    - 生产构建
+    - 使用临时夹具验证 npm/pnpm/Corepack 选择和异常目录容错
+    - 在开发服务保持关闭的前提下，验证可执行工具协议和 GitHub Skill 读写协议
+implemented:
+  - 按项目锁文件识别 pnpm/npm；pnpm 缺失时兼容 Corepack，必要时使用 npm 准备 pnpm
+  - 源码候选修改和源码检查共享包管理器解析，不再写死 pnpm
+  - 项目依赖状态增加 Python requirements 哈希判断，环境扫描对消失或不可读目录保持容错
+  - coding 命令白名单补充 Corepack，保留危险系统命令、重定向、Git 破坏性操作和敏感变量边界
+  - 增加 pnpm/npm 项目夹具及异常工作区回归测试
+  - 使用 GitHub CLI 实测连接、任意领域 SKILL.md 搜索和读取协议
+validation_results:
+  - Node 24.14.0: Pi 目标 Biome check 通过
+  - Node 24.14.0: TypeScript noEmit 通过
+  - Node 24.14.0: 全量测试 158 项，157 通过，0 失败，1 个 Windows 符号链接能力跳过
+  - Node 24.14.0: Next 生产构建通过
+  - GitHub CLI: 认证、SKILL.md 搜索（3 个结果）和读取（11,481 字节）通过
+  - 3000 端口保持关闭，开发服务未启动
+unresolved:
+  - 尚未把 Pi 接入小说或其他业务 API，按范围留待 Pi 本体稳定后的独立变更

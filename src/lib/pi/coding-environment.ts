@@ -1,11 +1,11 @@
 import "server-only";
 
+import { appStateDir } from "@/lib/runtime/app-paths";
+
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-
-import { appStateDir } from "@/lib/runtime/app-paths";
 
 export type CodingToolName = "node" | "npm" | "pnpm" | "git" | "python" | "java" | "dotnet" | "go" | "rust";
 
@@ -39,6 +39,13 @@ export interface CodingEnvironmentInstallResult {
   attempted: string[];
   output: string[];
   requiresUserAction: string[];
+}
+
+export interface ProjectPackageManagerInvocation {
+  manager: "pnpm" | "npm" | "corepack-pnpm";
+  executable: string;
+  prefixArgs: string[];
+  displayName: string;
 }
 
 const WINDOWS_INSTALLERS: Record<Exclude<CodingToolName, "npm" | "pnpm">, string> = {
@@ -79,13 +86,26 @@ function runVersion(executable: string): { version?: string; error?: string } {
 function findExecutable(name: CodingToolName): string | undefined {
   if (name === "node") return process.execPath;
   const candidate = executableName(name);
-  if (process.platform !== "win32") return candidate;
+  if (process.platform !== "win32") {
+    const result = spawnSync("which", [candidate], { encoding: "utf8", timeout: 5_000 });
+    return result.status === 0 ? candidate : undefined;
+  }
   const result = spawnSync("where.exe", [candidate], { encoding: "utf8", timeout: 5_000, windowsHide: true });
   if (result.status !== 0) return undefined;
   // Return the command name instead of the localized `where.exe` path. This
   // avoids OEM-codepage corruption for usernames containing CJK characters and
   // lets Windows resolve .cmd shims through the shell.
   return candidate;
+}
+
+function findCommand(command: string): string | undefined {
+  if (process.platform !== "win32") {
+    const result = spawnSync("which", [command], { encoding: "utf8", timeout: 5_000 });
+    return result.status === 0 ? command : undefined;
+  }
+  const candidate = process.platform === "win32" && !/\.(cmd|bat|exe)$/i.test(command) ? `${command}.cmd` : command;
+  const result = spawnSync("where.exe", [candidate], { encoding: "utf8", timeout: 5_000, windowsHide: true });
+  return result.status === 0 ? candidate : undefined;
 }
 
 function toolStatus(name: CodingToolName): CodingToolStatus {
@@ -96,7 +116,8 @@ function toolStatus(name: CodingToolName): CodingToolStatus {
   const versionMatch = result.version?.match(/(?:v|python )?(\d+)(?:\.(\d+))?/i);
   const major = versionMatch ? Number(versionMatch[1]) : 0;
   const minor = versionMatch ? Number(versionMatch[2] ?? 0) : 0;
-  const minimumSatisfied = name === "node" ? major >= 22 : name === "python" ? major > 3 || (major === 3 && minor >= 11) : true;
+  const minimumSatisfied =
+    name === "node" ? major >= 22 : name === "python" ? major > 3 || (major === 3 && minor >= 11) : true;
   return {
     name,
     required: name === "node" || name === "git",
@@ -108,24 +129,82 @@ function toolStatus(name: CodingToolName): CodingToolStatus {
   };
 }
 
-function packageManager(root: string): "pnpm" | "npm" | undefined {
+export function projectPackageManager(root: string): "pnpm" | "npm" | undefined {
   if (!fs.existsSync(path.join(root, "package.json"))) return undefined;
   return fs.existsSync(path.join(root, "pnpm-lock.yaml")) ? "pnpm" : "npm";
 }
 
+/**
+ * Resolve a package manager without assuming that the user's PATH already
+ * contains pnpm. Corepack is a compatibility bridge for Node installations
+ * that ship pnpm support without a global pnpm command.
+ */
+export function resolveProjectPackageManager(root: string): ProjectPackageManagerInvocation | undefined {
+  const manager = projectPackageManager(root);
+  if (!manager) return undefined;
+  const direct = findExecutable(manager);
+  if (direct) {
+    return {
+      manager,
+      executable: direct,
+      prefixArgs: [],
+      displayName: manager,
+    };
+  }
+  if (manager === "pnpm") {
+    const corepack = findCommand("corepack");
+    if (corepack) {
+      return {
+        manager: "corepack-pnpm",
+        executable: corepack,
+        prefixArgs: ["pnpm"],
+        displayName: "corepack pnpm",
+      };
+    }
+  }
+  return undefined;
+}
+
 function projectStatus(root: string): CodingEnvironmentStatus["project"] {
-  const manager = packageManager(root);
-  const dependenciesInstalled = manager
-    ? fs.existsSync(path.join(root, "node_modules"))
-    : false;
+  const manager = projectPackageManager(root);
   const hasRequirements = fs.existsSync(path.join(root, "requirements.txt"));
   const hasPyProject = fs.existsSync(path.join(root, "pyproject.toml"));
   const pythonEnvironment = hasRequirements || hasPyProject ? path.join(root, ".withyou-python") : undefined;
+  const pythonMarker = pythonEnvironment ? path.join(pythonEnvironment, ".withyou-requirements.sha256") : undefined;
+  const requirementsHash = hasRequirements
+    ? createHash("sha256")
+        .update(fs.readFileSync(path.join(root, "requirements.txt")))
+        .digest("hex")
+    : null;
+  const pythonDependenciesInstalled = Boolean(
+    pythonEnvironment &&
+      fs.existsSync(pythonEnvironment) &&
+      (!requirementsHash ||
+        (pythonMarker &&
+          fs.existsSync(pythonMarker) &&
+          fs.readFileSync(pythonMarker, "utf8").trim() === requirementsHash)),
+  );
+  const dependenciesInstalled = manager
+    ? fs.existsSync(path.join(root, "node_modules"))
+    : pythonEnvironment
+      ? pythonDependenciesInstalled
+      : false;
   const detectedTools = new Set<CodingToolName>();
   if (manager) detectedTools.add("node");
   if (pythonEnvironment) detectedTools.add("python");
-  if (fs.existsSync(path.join(root, "pom.xml")) || fs.existsSync(path.join(root, "build.gradle")) || fs.existsSync(path.join(root, "build.gradle.kts"))) detectedTools.add("java");
-  if (fs.readdirSync(root, { withFileTypes: true }).some((entry) => entry.isFile() && entry.name.endsWith(".csproj"))) detectedTools.add("dotnet");
+  if (
+    fs.existsSync(path.join(root, "pom.xml")) ||
+    fs.existsSync(path.join(root, "build.gradle")) ||
+    fs.existsSync(path.join(root, "build.gradle.kts"))
+  )
+    detectedTools.add("java");
+  try {
+    if (fs.readdirSync(root, { withFileTypes: true }).some((entry) => entry.isFile() && entry.name.endsWith(".csproj")))
+      detectedTools.add("dotnet");
+  } catch {
+    // A workspace can disappear between request authorization and inspection.
+    // Keep the tool status useful instead of turning a status check into a 500.
+  }
   if (fs.existsSync(path.join(root, "go.mod"))) detectedTools.add("go");
   if (fs.existsSync(path.join(root, "Cargo.toml"))) detectedTools.add("rust");
   return manager || pythonEnvironment || detectedTools.size > 0
@@ -138,7 +217,9 @@ export function codingEnvironmentRoot(): string {
 }
 
 export function getCodingEnvironmentStatus(root = process.cwd()): CodingEnvironmentStatus {
-  const tools = (["node", "npm", "pnpm", "git", "python", "java", "dotnet", "go", "rust"] as CodingToolName[]).map(toolStatus);
+  const tools = (["node", "npm", "pnpm", "git", "python", "java", "dotnet", "go", "rust"] as CodingToolName[]).map(
+    toolStatus,
+  );
   const requiredReady = tools.filter((tool) => tool.required).every((tool) => tool.available);
   const pnpmReady = tools.find((tool) => tool.name === "pnpm")?.available;
   const npmReady = tools.find((tool) => tool.name === "npm")?.available;
@@ -164,18 +245,25 @@ function safeInstallerEnvironment(): NodeJS.ProcessEnv {
 }
 
 function runInstaller(executable: string, args: string[]): { ok: boolean; output: string } {
-  const result = spawnSync(executable, args, {
-    encoding: "utf8",
-    timeout: 15 * 60_000,
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: safeInstallerEnvironment(),
-  });
-  const output = `${result.stdout || ""}${result.stderr || ""}`.trim().slice(-20_000);
-  return { ok: result.status === 0, output: output || (result.status === 0 ? "完成" : "失败") };
+  try {
+    const result = spawnSync(executable, args, {
+      encoding: "utf8",
+      timeout: 15 * 60_000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: safeInstallerEnvironment(),
+    });
+    const output = `${result.stdout || ""}${result.stderr || ""}`.trim().slice(-20_000);
+    return { ok: result.status === 0, output: output || (result.status === 0 ? "完成" : "失败") };
+  } catch (error) {
+    return { ok: false, output: error instanceof Error ? error.message : "安装命令启动失败" };
+  }
 }
 
-export function installCodingEnvironment(root = process.cwd(), requestedTools: CodingToolName[] = []): CodingEnvironmentInstallResult {
+export function installCodingEnvironment(
+  root = process.cwd(),
+  requestedTools: CodingToolName[] = [],
+): CodingEnvironmentInstallResult {
   const attempted: string[] = [];
   const output: string[] = [];
   const requiresUserAction: string[] = [];
@@ -211,29 +299,67 @@ export function installCodingEnvironment(root = process.cwd(), requestedTools: C
   status = getCodingEnvironmentStatus(root);
   const manager = status.project?.packageManager;
   if (manager && !status.project?.dependenciesInstalled) {
-    const executable = manager === "pnpm" ? executableName("pnpm") : executableName("npm");
-    const args = manager === "pnpm" ? ["install", "--frozen-lockfile"] : ["install"];
-    attempted.push(`${executable} ${args.join(" ")}`);
-    const result = runInstaller(executable, args);
-    output.push(`项目依赖: ${result.output}`);
-    if (!result.ok) requiresUserAction.push(`项目依赖安装失败，请在 ${path.resolve(root)} 中运行 ${executable} ${args.join(" ")}`);
+    let invocation = resolveProjectPackageManager(root);
+    if (!invocation && manager === "pnpm") {
+      const npm = findExecutable("npm");
+      const corepack = findCommand("corepack");
+      if (corepack) {
+        invocation = {
+          manager: "corepack-pnpm",
+          executable: corepack,
+          prefixArgs: ["pnpm"],
+          displayName: "corepack pnpm",
+        };
+      } else if (npm) {
+        attempted.push(`${npm} install --global pnpm`);
+        const bootstrapped = runInstaller(npm, ["install", "--global", "pnpm"]);
+        output.push(`pnpm 准备: ${bootstrapped.output}`);
+        invocation = bootstrapped.ok ? resolveProjectPackageManager(root) : undefined;
+      }
+    }
+    if (invocation) {
+      const args = [...invocation.prefixArgs, "install", ...(manager === "pnpm" ? ["--frozen-lockfile"] : [])];
+      attempted.push(`${invocation.displayName} ${args.slice(invocation.prefixArgs.length).join(" ")}`);
+      const result = runInstaller(invocation.executable, args);
+      output.push(`项目依赖: ${result.output}`);
+      if (!result.ok)
+        requiresUserAction.push(
+          `项目依赖安装失败，请在 ${path.resolve(root)} 中运行 ${invocation.displayName} ${args.slice(invocation.prefixArgs.length).join(" ")}`,
+        );
+    } else {
+      requiresUserAction.push(`未找到项目所需的 ${manager} 或 Corepack，请安装后重新准备依赖。`);
+    }
   }
 
   const requirements = path.join(root, "requirements.txt");
-  if (status.tools.find((tool) => tool.name === "python")?.available && (fs.existsSync(requirements) || fs.existsSync(path.join(root, "pyproject.toml")))) {
+  if (
+    status.tools.find((tool) => tool.name === "python")?.available &&
+    (fs.existsSync(requirements) || fs.existsSync(path.join(root, "pyproject.toml")))
+  ) {
     const venv = path.join(root, ".withyou-python");
     if (!fs.existsSync(venv)) {
       attempted.push("python -m venv .withyou-python");
       const created = runInstaller(executableName("python"), ["-m", "venv", ".withyou-python"]);
       output.push(`Python venv: ${created.output}`);
     }
-    const venvPython = process.platform === "win32" ? path.join(venv, "Scripts", "python.exe") : path.join(venv, "bin", "python");
+    const venvPython =
+      process.platform === "win32" ? path.join(venv, "Scripts", "python.exe") : path.join(venv, "bin", "python");
     const marker = path.join(venv, ".withyou-requirements.sha256");
-    const requirementsHash = fs.existsSync(requirements) ? createHash("sha256").update(fs.readFileSync(requirements)).digest("hex") : null;
-    const alreadyInstalled = requirementsHash && fs.existsSync(marker) && fs.readFileSync(marker, "utf8").trim() === requirementsHash;
+    const requirementsHash = fs.existsSync(requirements)
+      ? createHash("sha256").update(fs.readFileSync(requirements)).digest("hex")
+      : null;
+    const alreadyInstalled =
+      requirementsHash && fs.existsSync(marker) && fs.readFileSync(marker, "utf8").trim() === requirementsHash;
     if (requirementsHash && !alreadyInstalled && fs.existsSync(venvPython)) {
       attempted.push("python -m pip install -r requirements.txt");
-      const installed = runInstaller(venvPython, ["-m", "pip", "install", "--disable-pip-version-check", "-r", "requirements.txt"]);
+      const installed = runInstaller(venvPython, [
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "-r",
+        "requirements.txt",
+      ]);
       output.push(`Python 项目依赖: ${installed.output}`);
       if (installed.ok) fs.writeFileSync(marker, requirementsHash, "utf8");
       else requiresUserAction.push("Python 项目依赖安装失败；Pi 已保留真实输出，可根据错误继续修复。");
