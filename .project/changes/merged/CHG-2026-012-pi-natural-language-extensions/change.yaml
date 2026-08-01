@@ -39,6 +39,8 @@ expected_files:
   - src/app/api/pi/source/skills/catalog/**
   - tests/source-skill-catalog.test.ts
   - tests/source-skill-manager.test.ts
+deviations:
+  - 未新增目录 REST API；Pi 的受控工具在服务器内直接调用目录适配器，避免把远程下载入口暴露为可被浏览器任意调用的公共接口。
 implemented:
   - 默认 Pi 按工作区绑定的 novelId 创建隔离会话，提示词工具只能操作当前小说，避免跨工作区会话与提示词串线
   - 新增 prompt_list、prompt_read、prompt_save、prompt_activate、prompt_deactivate；内置提示词只读，自定义包可由 Pi 自然语言创建、修改和启停
