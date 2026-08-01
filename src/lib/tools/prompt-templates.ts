@@ -247,6 +247,13 @@ ${ANTI_AI_RULES}
 
 （以此类推每章）`,
   variableSchema: [
+    {
+      key: "intent",
+      label: "本次创作意图",
+      type: "textarea",
+      default: "",
+      placeholder: "用一句话说你想让这部作品接下来形成什么",
+    },
     { key: "theme", label: "题材", type: "textarea", default: "玄幻", placeholder: "如：玄幻、都市" },
     { key: "background", label: "世界观背景", type: "textarea", default: "", placeholder: "如：星际废土" },
     { key: "cheat", label: "金手指", type: "textarea", default: "", placeholder: "如：签到系统" },
@@ -255,6 +262,7 @@ ${ANTI_AI_RULES}
   ],
   buildUserPrompt: (vars) => {
     const parts = [
+      vars.intent ? `【本次创作意图】${vars.intent}` : "",
       `【题材】${vars.theme || "未指定"}`,
       vars.background ? `【世界观】${vars.background}` : "",
       vars.cheat ? `【金手指】${vars.cheat}` : "",
@@ -439,6 +447,13 @@ name, nameReason, age, identity, appearance, proactivity, likability, competence
 - relations 为 [{ "target": "", "relation": "", "tension": "" }]；
 - proactivity、likability、competence 使用 1-10 的相对评分，评分必须与角色的剧情位置相符。`,
   variableSchema: [
+    {
+      key: "intent",
+      label: "本次创作意图",
+      type: "textarea",
+      default: "",
+      placeholder: "用一句话说你想补充或设计谁",
+    },
     { key: "target", label: "目标读者", type: "select", default: "男频", options: ["男频", "女频"] },
     { key: "theme", label: "题材/世界观", type: "textarea", default: "玄幻", placeholder: "如：玄幻、都市、末日" },
     {
@@ -452,6 +467,7 @@ name, nameReason, age, identity, appearance, proactivity, likability, competence
   ],
   buildUserPrompt: (vars) => {
     const parts = [
+      vars.intent ? `【本次创作意图】${vars.intent}` : "",
       "请生成小说角色设定。",
       `【目标读者】${vars.target || "男频"}`,
       `【题材背景】${vars.theme || "通用"}`,

@@ -215,7 +215,7 @@ export async function POST(req: NextRequest) {
     // 服务端复核因果前置：TOOL_WORKFLOWS 此前只在前端强制，直接打这个路由能绕过。
     // 依据是服务端刚回读的文件树，不是前端说它有什么。
     if (serverContext) {
-      const blocked = workflowBlockReason(serverContext);
+      const blocked = workflowBlockReason(serverContext, isToolId(body.toolType) ? body.toolType : undefined);
       if (blocked) return apiError(blocked, 409, "WORKFLOW_PREREQUISITE_MISSING");
     }
 

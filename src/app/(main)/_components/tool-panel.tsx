@@ -22,6 +22,7 @@ import { actOnSemanticContract, createSemanticContract, updateSemanticContract }
 import type { SemanticContractEditableFields, SemanticContractEnvelope } from "@/lib/semantic-alignment/types";
 import { getDynamicToolState } from "@/lib/tools/project-knowledge";
 import type { PromptTemplate } from "@/lib/tools/prompt-templates";
+import { getTaskEntryCopy, isNaturalLanguageTaskTool } from "@/lib/tools/task-entry";
 import {
   ARTIFACT_LABELS,
   ARTIFACT_PRODUCERS,
@@ -573,6 +574,8 @@ export function ToolPanel({
   onApplyToChat,
 }: ToolPanelProps) {
   const toolId = template.toolType as ToolId;
+  const taskEntryCopy = getTaskEntryCopy(toolId);
+  const usesTaskEntry = isNaturalLanguageTaskTool(toolId);
   const dynamicState = useMemo(() => getDynamicToolState(toolId, novelData), [toolId, novelData]);
   const [variables, setVariables] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
@@ -587,12 +590,14 @@ export function ToolPanel({
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [showAdvancedFields, setShowAdvancedFields] = useState(!usesTaskEntry);
   const [selectedCandidate, setSelectedCandidate] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fileTreeMeta = useFileTreeMetaStore((state) => state.fields);
   const workflowStatus = useMemo(() => getWorkflowStatus(toolId, novelData), [toolId, novelData]);
   const hasBlockingDependency =
     workflowStatus.missingRequired.length > 0 || workflowStatus.missingRequiredGroups.length > 0;
+  const generationBlocked = hasBlockingDependency && !usesTaskEntry;
   const outputField = TOOL_WORKFLOWS[toolId].outputField;
   const outputHealth = outputField ? checkFieldHealth(outputField, fileTreeMeta) : null;
 
@@ -606,6 +611,7 @@ export function ToolPanel({
     setResult(null);
     setError(null);
     setShowHistory(false);
+    setShowAdvancedFields(!isNaturalLanguageTaskTool(toolId));
     setSelectedCandidate(null);
     setSemanticEnvelope(null);
     abortRef.current?.abort();
@@ -751,7 +757,7 @@ export function ToolPanel({
   );
 
   const handleGenerate = useCallback(async () => {
-    if (hasBlockingDependency) {
+    if (generationBlocked) {
       const direct = workflowStatus.missingRequired.map((field) => ARTIFACT_LABELS[field]);
       const groups = workflowStatus.missingRequiredGroups.map((group) =>
         group.map((field) => ARTIFACT_LABELS[field]).join(" 或 "),
@@ -791,7 +797,7 @@ export function ToolPanel({
     } finally {
       setSemanticBusy(false);
     }
-  }, [hasBlockingDependency, template, variables, novelId, workflowStatus, executeGeneration]);
+  }, [generationBlocked, template, variables, novelId, workflowStatus, executeGeneration]);
 
   const handleSemanticUpdate = useCallback(
     async (fields: SemanticContractEditableFields) => {
@@ -950,7 +956,7 @@ export function ToolPanel({
                 {outputField && <span className="text-muted-foreground">产出：{ARTIFACT_LABELS[outputField]}</span>}
               </div>
 
-              {hasBlockingDependency ? (
+              {hasBlockingDependency && !usesTaskEntry ? (
                 <div className="flex items-start gap-2 text-destructive">
                   <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
                   <div>
@@ -976,6 +982,16 @@ export function ToolPanel({
                         </span>
                       ))}
                     </div>
+                  </div>
+                </div>
+              ) : hasBlockingDependency && usesTaskEntry ? (
+                <div className="flex items-start gap-2 text-amber-600">
+                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                  <div>
+                    <p>部分资料还没有确认，但可以先按你的描述继续。</p>
+                    <p className="mt-1 text-muted-foreground">
+                      系统会把已有项目内容作为事实，缺口会标记为待确认，不会自动写入文件树。
+                    </p>
                   </div>
                 </div>
               ) : (
@@ -1010,53 +1026,102 @@ export function ToolPanel({
               )}
             </div>
 
-            {/* Variables */}
-            <div className="flex items-center justify-between">
-              <span className="font-medium text-xs">创作参数</span>
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                className="size-7"
-                onClick={() => void handleAiFill()}
-                disabled={aiFilling !== null || loading || semanticBusy}
-                title="智能填写全部空字段"
-                aria-label="智能填写全部空字段"
-              >
-                {aiFilling ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
-              </Button>
-            </div>
-            {template.variableSchema.map((v) => (
-              <div key={v.key}>
-                <div className="mb-1 flex items-center">
-                  <span className="font-medium text-muted-foreground text-xs">{v.label}</span>
+            {/* Natural-language task entry / legacy advanced fields */}
+            {usesTaskEntry && taskEntryCopy ? (
+              <div className="space-y-3 rounded-xl border border-primary/25 bg-primary/[0.035] p-4">
+                <div>
+                  <p className="font-medium text-[11px] text-primary uppercase tracking-[0.12em]">
+                    {taskEntryCopy.eyebrow}
+                  </p>
+                  <h3 className="mt-1 font-semibold text-base text-foreground">{taskEntryCopy.title}</h3>
+                  <p className="mt-1 text-muted-foreground text-xs leading-relaxed">{taskEntryCopy.description}</p>
                 </div>
-                {v.type === "select" && v.options ? (
-                  <div className="flex gap-2">
-                    {v.options.map((opt) => (
-                      <button
-                        type="button"
-                        key={opt}
-                        onClick={() => updateVar(v.key, opt)}
-                        className={`flex-1 cursor-pointer rounded-lg border px-3 py-2 text-sm transition-all ${
-                          variables[v.key] === opt
-                            ? "border-primary bg-primary/10 font-medium text-primary"
-                            : "border-border bg-background text-muted-foreground hover:border-primary/50"
-                        }`}
-                      >
-                        {opt}
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <Textarea
-                    value={variables[v.key] || ""}
-                    onChange={(e) => updateVar(v.key, e.target.value)}
-                    placeholder={v.placeholder}
-                    className="h-16 resize-none text-sm"
-                  />
-                )}
+                <Textarea
+                  value={variables.intent || ""}
+                  onChange={(e) => updateVar("intent", e.target.value)}
+                  placeholder={taskEntryCopy.placeholder}
+                  className="min-h-28 resize-y bg-background text-sm"
+                  aria-label="本次创作意图"
+                />
+                <p className="text-[11px] text-muted-foreground">{taskEntryCopy.helper}</p>
+                <button
+                  type="button"
+                  className="text-muted-foreground text-xs underline-offset-4 hover:text-foreground hover:underline"
+                  onClick={() => setShowAdvancedFields((current) => !current)}
+                >
+                  {showAdvancedFields ? "收起更多条件" : taskEntryCopy.advancedLabel}
+                </button>
               </div>
-            ))}
+            ) : (
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-xs">创作参数</span>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  className="size-7"
+                  onClick={() => void handleAiFill()}
+                  disabled={aiFilling !== null || loading || semanticBusy}
+                  title="智能填写全部空字段"
+                  aria-label="智能填写全部空字段"
+                >
+                  {aiFilling ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+                </Button>
+              </div>
+            )}
+            {(!usesTaskEntry || showAdvancedFields) && (
+              <div className="space-y-3 rounded-lg border border-border/70 bg-muted/15 p-3">
+                {usesTaskEntry && (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-xs">更多条件</span>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      className="size-7"
+                      onClick={() => void handleAiFill()}
+                      disabled={aiFilling !== null || loading || semanticBusy}
+                      title="智能补全可选条件"
+                      aria-label="智能补全可选条件"
+                    >
+                      {aiFilling ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+                    </Button>
+                  </div>
+                )}
+                {template.variableSchema
+                  .filter((v) => v.key !== "intent")
+                  .map((v) => (
+                    <div key={v.key}>
+                      <div className="mb-1 flex items-center">
+                        <span className="font-medium text-muted-foreground text-xs">{v.label}</span>
+                      </div>
+                      {v.type === "select" && v.options ? (
+                        <div className="flex gap-2">
+                          {v.options.map((opt) => (
+                            <button
+                              type="button"
+                              key={opt}
+                              onClick={() => updateVar(v.key, opt)}
+                              className={`flex-1 cursor-pointer rounded-lg border px-3 py-2 text-sm transition-all ${
+                                variables[v.key] === opt
+                                  ? "border-primary bg-primary/10 font-medium text-primary"
+                                  : "border-border bg-background text-muted-foreground hover:border-primary/50"
+                              }`}
+                            >
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <Textarea
+                          value={variables[v.key] || ""}
+                          onChange={(e) => updateVar(v.key, e.target.value)}
+                          placeholder={v.placeholder}
+                          className="h-16 resize-none bg-background text-sm"
+                        />
+                      )}
+                    </div>
+                  ))}
+              </div>
+            )}
 
             {semanticEnvelope && (
               <SemanticContractCard
@@ -1082,7 +1147,7 @@ export function ToolPanel({
               <Button
                 onClick={handleGenerate}
                 disabled={
-                  loading || semanticBusy || aiFilling !== null || hasBlockingDependency || semanticEnvelope !== null
+                  loading || semanticBusy || aiFilling !== null || generationBlocked || semanticEnvelope !== null
                 }
                 className="flex-1"
                 size="default"

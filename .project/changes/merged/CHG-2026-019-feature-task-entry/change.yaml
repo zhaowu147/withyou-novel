@@ -1,0 +1,63 @@
+id: CHG-2026-019
+area: feature-task-entry
+title: 将功能区从参数表单改为自然语言任务入口
+status: merged
+base: disk-2026-08-02
+revision: 2
+disk_baseline: 当前磁盘代码；功能区以 ToolPanel + variableSchema 展示参数表单，AI 一轮填充为附加按钮，语义契约已存在并负责生成前确认
+areas:
+  - feature-area
+  - tool-workflow
+  - semantic-alignment
+  - frontend-ux
+scope:
+  - src/app/(main)/_components/tool-panel.tsx
+  - src/app/api/generate/route.ts
+  - src/lib/tools/prompt-templates.ts
+  - src/lib/tools/server-tool-context.ts
+  - src/lib/tools/task-entry.ts
+  - tests/task-entry.test.ts
+  - package.json
+  - .project/current.yaml
+goals:
+  - 让用户用一句自然语言表达创作意图，不再被迫先填写完整参数表
+  - 以大纲和角色两个高频工具作为统一任务入口试点
+  - 保留旧字段和高级设置，兼容现有 API、语义契约和文件树写入流程
+  - 将事实、推断和可选偏好明确区分，避免模型静默覆盖已确认信息
+  - 缺少非核心信息时继续生成，不把表单缺口当作默认阻塞条件
+constraints:
+  - 不改动 Pi 运行时与项目 API
+  - 不改变文件树事实源和用户确认后写入原则
+  - 不删除旧表单变量或旧接口字段
+  - 不将推断内容直接写入 NovelData
+validation:
+  status: passed
+  results:
+    - Node 24 TypeScript noEmit 通过
+    - task-entry 3 项测试通过
+    - 全量测试 164 项：163 通过、0 失败、1 跳过（Windows 符号链接能力）
+    - Next.js 生产构建通过，静态页面 33/33
+    - 新增纯函数、模板和测试文件 Biome check 通过
+  note: tool-panel.tsx 与 server-tool-context.ts 的完整 Biome check 仍受既有 Markdown 非空断言/文件换行格式告警影响；类型检查与生产构建通过，未扩大无关清理范围
+implemented:
+  - 新增大纲/角色自然语言任务入口文案与试点工具白名单
+  - 大纲和角色模板增加 intent 字段，用户原话进入现有语义契约和生成提示
+  - ToolPanel 默认只展示自然语言意图；旧字段收进高级设置，AI 补全按钮随高级设置保留
+  - 大纲/角色前端缺少推荐资料时显示可继续提示，不再默认禁用生成
+  - 服务端对大纲/角色同步放宽相同的工作流前置，避免前后端一边允许、一边返回 409
+  - 试点不自动写入推断内容，仍须经过语义契约确认和原有保存动作
+unresolved:
+  - 脑洞、世界观、金手指、书名、简介、开篇等工具仍使用旧表单，后续按同一入口逐个迁移
+  - 当前未在真实模型请求下做完整 UX 盲测，需用户在开发环境体验后继续调整文案和默认值
+files:
+  created:
+    - src/lib/tools/task-entry.ts
+    - tests/task-entry.test.ts
+    - .project/changes/merged/CHG-2026-019-feature-task-entry/change.yaml
+  modified:
+    - src/app/(main)/_components/tool-panel.tsx
+    - src/app/api/generate/route.ts
+    - src/lib/tools/prompt-templates.ts
+    - src/lib/tools/server-tool-context.ts
+    - package.json
+    - .project/current.yaml
