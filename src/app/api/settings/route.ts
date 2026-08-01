@@ -61,6 +61,10 @@ export async function POST(request: Request) {
       chatAgent: mergeConfig(current.chatAgent, body.chatAgent),
       coverGeneration: mergeConfig(current.coverGeneration, body.coverGeneration),
       piAgent: mergeConfig(current.piAgent, body.piAgent),
+      semanticAlignment: {
+        ...current.semanticAlignment,
+        ...(body.semanticAlignment ?? {}),
+      },
       version: DEFAULT_SETTINGS.version,
       updatedAt: new Date().toISOString(),
     };
@@ -99,6 +103,7 @@ function sanitizeKeys(settings: AppSettings): AppSettings {
     chatAgent: sanitize(settings.chatAgent),
     coverGeneration: sanitize(settings.coverGeneration),
     piAgent: sanitize(settings.piAgent),
+    semanticAlignment: { ...settings.semanticAlignment },
   };
 }
 

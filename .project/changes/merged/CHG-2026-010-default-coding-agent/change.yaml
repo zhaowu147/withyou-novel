@@ -1,0 +1,40 @@
+id: CHG-2026-010
+title: Make Pi the default coding agent and remove the third permission tier
+status: completed
+created_at: 2026-08-01
+baseline:
+  source_of_truth: current disk code only; git history not used
+  pi_ui: observer/project/source selector with source unlock flow
+  pi_runtime: normal project runtime plus separately authorized source runtime
+purpose: >-
+  Make Pi identify as a coding agent by default. Remove the user-facing third
+  permission tier and source unlock gate while preserving hard workspace,
+  command, secret and proposal safety boundaries.
+scope:
+  - Make the default Pi route use the coding-agent runtime for the app workspace.
+  - Remove source permission unlock, grant-token gating and three-level selector UI.
+  - Keep soft identity guidance separate from hard execution policy.
+  - Preserve existing proposal/review and environment installation flows.
+validation:
+  - pnpm exec tsc --noEmit (Node 22)
+  - focused Pi/UI tests
+  - pnpm build (Node 22)
+revisions: []
+actual_files:
+  - src/app/api/pi/route.ts
+  - src/app/api/pi/source/route.ts
+  - src/app/api/pi/source/permissions/route.ts
+  - src/app/(main)/_components/pi-dock.tsx
+  - src/app/(main)/_components/settings-panel.tsx
+  - src/lib/pi/source-permissions.ts
+  - src/lib/pi/source-runtime.ts
+  - src/lib/pi/source-skill.ts
+  - tests/coding-agent.test.ts
+  - docs/pi-coding-agent.md
+validation_results:
+  typecheck_node_22: passed
+  full_tests_node_22: passed (151 total, 150 passed, 0 failed, 1 existing skipped)
+  production_build_node_22: passed
+  unlock_regression: passed (coding workspace available without token or phrase)
+unresolved:
+  - Legacy source permission and source API filenames remain as compatibility shims; they no longer gate the default coding runtime or expose a user-facing third tier.

@@ -1,5 +1,4 @@
 import type { PiRuntimeEvent } from "@/lib/pi/runtime";
-import { validateSourceGrant } from "@/lib/pi/source-permissions";
 import { authorizeSourceRequest, sourceRequestErrorResponse } from "@/lib/pi/source-request-auth";
 import { abortSourcePi, promptSourcePi } from "@/lib/pi/source-runtime";
 
@@ -14,7 +13,6 @@ export async function POST(request: Request): Promise<Response> {
   let auth: Awaited<ReturnType<typeof authorizeSourceRequest>>;
   try {
     auth = await authorizeSourceRequest(request);
-    validateSourceGrant(auth.workspaceId, auth.grantToken);
   } catch (error) {
     return sourceRequestErrorResponse(error);
   }
@@ -57,7 +55,6 @@ export async function POST(request: Request): Promise<Response> {
 export async function DELETE(request: Request): Promise<Response> {
   try {
     const auth = await authorizeSourceRequest(request);
-    validateSourceGrant(auth.workspaceId, auth.grantToken);
     await abortSourcePi();
     return Response.json({ success: true });
   } catch (error) {

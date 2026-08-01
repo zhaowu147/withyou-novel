@@ -9,6 +9,7 @@ import {
   type ConversationMessage,
   createConversation,
   emptyDraft,
+  ensureConversation,
   getActiveConversationId,
   getAllConversations,
   getConversation,
@@ -56,6 +57,7 @@ export function Workspace({ initialConversationId = null, initialToolId = null }
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [editBuffer, setEditBuffer] = useState("");
+  const chapterVersionHashes = useRef<Record<string, string>>({});
   const [importOpen, setImportOpen] = useState(false);
   const conversationIdRef = useRef<string | null>(null);
   const novelIdRef = useRef<string | null>(null);
@@ -377,11 +379,7 @@ export function Workspace({ initialConversationId = null, initialToolId = null }
         return;
       }
 
-      const conv = getConversation(id);
-      if (!conv) {
-        if (switchVersionRef.current === version) switchingRef.current = false;
-        return;
-      }
+      const conv = ensureConversation(id);
 
       try {
         let activationResponse = await fetch("/api/workspaces/activate", {
@@ -691,8 +689,11 @@ export function Workspace({ initialConversationId = null, initialToolId = null }
     workspaceFetch(`/api/local-novels/${encodeURIComponent(novelId)}/chapters/${num}`)
       .then((r) => r.json())
       .then((json) => {
-        if (json.success && json.data?.content) {
+        if (json.success && typeof json.data?.content === "string") {
           setRealChapterContent(json.data.content);
+          if (typeof json.data.contentHash === "string") {
+            chapterVersionHashes.current[`${novelId}:${num}`] = json.data.contentHash;
+          }
         } else {
           setRealChapterContent(null);
         }
@@ -715,34 +716,59 @@ export function Workspace({ initialConversationId = null, initialToolId = null }
   const handleSave = useCallback(async () => {
     if (!selectedItem) return;
     if (selectedItem.startsWith("第") && selectedItem.endsWith("章")) {
-      // 保存到 localStorage(兼容)
       const current = data.chapters[selectedItem];
       const decoded = current ? decodeChapterRecord(selectedItem, current) : null;
-      handleUpdate({
-        chapters: {
-          ...data.chapters,
-          [selectedItem]: JSON.stringify({
-            title: decoded?.title || selectedItem,
-            content: editBuffer,
-          }),
-        },
-      });
-      recordFileWrite("chapters", [], fileTreeMeta);
+      const saveLocalDraft = () => {
+        handleUpdate({
+          chapters: {
+            ...data.chapters,
+            [selectedItem]: JSON.stringify({
+              title: decoded?.title || selectedItem,
+              content: editBuffer,
+            }),
+          },
+        });
+        recordFileWrite("chapters", [], fileTreeMeta);
+      };
 
-      // 同步写入文件系统(如果小说已命名)
+      // 已绑定作品时，以文件树版本保护写入成功为准，再同步会话草稿。
       if (novelId) {
         const m = selectedItem.match(/第(\d+)章/);
         if (m) {
           const num = parseInt(m[1], 10);
-          workspaceFetch(`/api/local-novels/${encodeURIComponent(novelId)}/chapters/${num}`, {
+          void workspaceFetch(`/api/local-novels/${encodeURIComponent(novelId)}/chapters/${num}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: editBuffer }),
-          }).catch(() => {
-            /* 静默失败 */
-          });
+            body: JSON.stringify({
+              content: editBuffer,
+              expectedHash: chapterVersionHashes.current[`${novelId}:${num}`],
+            }),
+          })
+            .then(async (response) => {
+              const json = await response.json().catch(() => null);
+              if (response.status === 409 && json?.code === "CHAPTER_VERSION_CONFLICT") {
+                if (typeof json.data?.content === "string") setRealChapterContent(json.data.content);
+                if (typeof json.data?.contentHash === "string") {
+                  chapterVersionHashes.current[`${novelId}:${num}`] = json.data.contentHash;
+                }
+                setEditing(true);
+                toast.error("章节已在其他位置更新，当前编辑未覆盖最新版本；请重新打开后再保存");
+                return;
+              }
+              if (!response.ok) throw new Error("章节保存失败");
+              if (typeof json?.data?.contentHash === "string") {
+                chapterVersionHashes.current[`${novelId}:${num}`] = json.data.contentHash;
+              }
+              saveLocalDraft();
+              setRealChapterContent(editBuffer);
+            })
+            .catch(() => toast.error("章节保存失败，内容仍保留在当前编辑框中"));
+          setEditing(false);
+          return;
         }
       }
+      // 未绑定作品时，仅保存隔离会话草稿，等待后续创建项目后再落盘。
+      saveLocalDraft();
     } else {
       const field = FILE_FIELDS[selectedItem];
       if (field && field !== "novelName") {

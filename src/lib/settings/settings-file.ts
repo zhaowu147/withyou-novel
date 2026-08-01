@@ -30,6 +30,7 @@ function cloneDefaultSettings(): AppSettings {
     chatAgent: { ...DEFAULT_SETTINGS.chatAgent },
     coverGeneration: { ...DEFAULT_SETTINGS.coverGeneration },
     piAgent: { ...DEFAULT_SETTINGS.piAgent },
+    semanticAlignment: { ...DEFAULT_SETTINGS.semanticAlignment },
   };
 }
 
@@ -57,6 +58,10 @@ function normalizeSettings(value: unknown): AppSettings | null {
     chatAgent: mergeModelConfig(DEFAULT_SETTINGS.chatAgent, parsed.chatAgent),
     coverGeneration: mergeModelConfig(DEFAULT_SETTINGS.coverGeneration, parsed.coverGeneration),
     piAgent: mergeModelConfig(DEFAULT_SETTINGS.piAgent, parsed.piAgent),
+    semanticAlignment: {
+      autoConfirmLowRisk:
+        parsed.semanticAlignment?.autoConfirmLowRisk ?? DEFAULT_SETTINGS.semanticAlignment.autoConfirmLowRisk,
+    },
     version: DEFAULT_SETTINGS.version,
   };
 }

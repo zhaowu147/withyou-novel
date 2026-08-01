@@ -201,6 +201,34 @@ export function getConversation(id: string): Conversation | undefined {
   return loadAll().find((c) => c.id === id);
 }
 
+/**
+ * 路由首次直达时，浏览器端可能先完成导航再完成 localStorage 写入。
+ * 为了让工作区激活保持幂等，按路由 id 补建一个空会话，而不是静默放弃激活。
+ */
+export function ensureConversation(id: string): Conversation {
+  const existing = getConversation(id);
+  if (existing) return existing;
+  const all = loadAll();
+  const now = Date.now();
+  const conversation: Conversation = {
+    id,
+    title: "(新对话)",
+    messages: [],
+    createdAt: now,
+    updatedAt: now,
+    novelId: null,
+    draft: emptyDraft(),
+    workspaceLease: null,
+    pinned: false,
+    archived: false,
+    checkpoint: null,
+  };
+  all.unshift(conversation);
+  saveAll(all);
+  setActiveConversationId(id);
+  return conversation;
+}
+
 export function appendMessage(id: string, msg: ConversationMessage): Conversation | undefined {
   const all = loadAll();
   const target = all.find((c) => c.id === id);

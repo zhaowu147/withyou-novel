@@ -1,5 +1,6 @@
-import { abortPi, type PiRuntimeEvent, promptPi } from "@/lib/pi/runtime";
-import { resolveWorkspaceProjectScope, workspaceCredentials, workspaceErrorResponse } from "@/lib/workspaces/ownership";
+import { promptSourcePi, abortSourcePi } from "@/lib/pi/source-runtime";
+import type { PiRuntimeEvent } from "@/lib/pi/runtime";
+import { authorizeSourceRequest, sourceRequestErrorResponse } from "@/lib/pi/source-request-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,25 +9,15 @@ function encodeEvent(event: PiRuntimeEvent): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`);
 }
 
+/** The default Pi endpoint is the coding-agent runtime. */
 export async function POST(request: Request): Promise<Response> {
-  const body = (await request.json()) as {
-    novelId?: string;
-    message?: string;
-    accessLevel?: "observer" | "project";
-  };
-  const requestedNovelId = body.novelId?.trim();
+  const body = (await request.json()) as { message?: string };
   const message = body.message?.trim();
-  if (!message) {
-    return Response.json({ success: false, error: "缺少 message" }, { status: 400 });
-  }
-  let workspaceId: string;
-  let projectId: string;
+  if (!message) return Response.json({ success: false, error: "缺少 message" }, { status: 400 });
   try {
-    const credentials = workspaceCredentials(request);
-    workspaceId = credentials.workspaceId;
-    projectId = resolveWorkspaceProjectScope(request, requestedNovelId, "pi").projectId;
+    await authorizeSourceRequest(request);
   } catch (error) {
-    return workspaceErrorResponse(error) ?? Response.json({ success: false, error: "工作区校验失败" }, { status: 500 });
+    return sourceRequestErrorResponse(error);
   }
 
   const stream = new ReadableStream<Uint8Array>({
@@ -35,21 +26,16 @@ export async function POST(request: Request): Promise<Response> {
       const send = (event: PiRuntimeEvent) => {
         if (!closed) controller.enqueue(encodeEvent(event));
       };
-      void promptPi(workspaceId, projectId, message, send, body.accessLevel === "observer" ? "observer" : "project")
+      void promptSourcePi(message, send)
         .then(() => send({ type: "done" }))
-        .catch((error: unknown) => {
-          send({
-            type: "error",
-            text: error instanceof Error ? error.message : "Pi 运行失败",
-          });
-        })
+        .catch((error: unknown) => send({ type: "error", text: error instanceof Error ? error.message : "Pi 运行失败" }))
         .finally(() => {
           closed = true;
           controller.close();
         });
     },
     async cancel() {
-      await abortPi(workspaceId, projectId);
+      await abortSourcePi();
     },
   });
 
@@ -63,14 +49,11 @@ export async function POST(request: Request): Promise<Response> {
 }
 
 export async function DELETE(request: Request): Promise<Response> {
-  const url = new URL(request.url);
-  const requestedNovelId = url.searchParams.get("novelId");
   try {
-    const credentials = workspaceCredentials(request);
-    const projectId = resolveWorkspaceProjectScope(request, requestedNovelId, "pi").projectId;
-    await abortPi(credentials.workspaceId, projectId);
+    await authorizeSourceRequest(request);
+    await abortSourcePi();
+    return Response.json({ success: true });
   } catch (error) {
-    return workspaceErrorResponse(error) ?? Response.json({ success: false, error: "工作区校验失败" }, { status: 500 });
+    return sourceRequestErrorResponse(error);
   }
-  return Response.json({ success: true });
 }

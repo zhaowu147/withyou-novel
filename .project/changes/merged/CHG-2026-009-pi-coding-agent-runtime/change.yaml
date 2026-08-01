@@ -1,0 +1,50 @@
+id: CHG-2026-009
+title: Upgrade Pi to a local coding agent with managed runtime
+status: completed
+created_at: 2026-08-01
+baseline:
+  source_of_truth: current disk code only; git history not used
+  app: Electron shell + Next standalone server on Windows
+  pi_runtime: custom project/observer tools, proposal-only file changes
+purpose: >-
+  Give Pi a Codex-like coding workflow while keeping the existing project and
+  source permission boundaries: managed local toolchain discovery/provisioning,
+  project-scoped read/write/edit/search and guarded command execution.
+scope:
+  - Add a local coding-agent environment manager and status/install API.
+  - Expose Pi coding tools backed by project-root path guards and command policy.
+  - Keep writes and risky commands behind explicit approval/proposal boundaries.
+  - Add install/runtime documentation and tests.
+expected_files:
+  - src/lib/pi/coding-environment.ts
+  - src/lib/pi/coding-tools.ts
+  - src/app/api/pi/environment/route.ts
+  - src/lib/pi/runtime.ts
+  - src/app/(main)/_components/pi-dock.tsx
+  - docs/pi-coding-agent.md
+validation:
+  - pnpm test
+  - pnpm build
+  - environment status API smoke test
+revisions: []
+actual_files:
+  - src/lib/pi/coding-environment.ts
+  - src/lib/pi/coding-tools.ts
+  - src/lib/pi/source-runtime.ts
+  - src/app/api/pi/environment/route.ts
+  - src/app/(main)/_components/pi-dock.tsx
+  - tests/coding-agent.test.ts
+  - docs/pi-coding-agent.md
+  - electron/coding-environment.json
+  - electron/package.json
+  - package.json
+validation_results:
+  typecheck: passed
+  focused_coding_tests: passed (2/2)
+  full_tests_node_22: passed (150 total, 149 passed, 0 failed, 1 existing skipped)
+  production_build_node_22: passed
+  electron_runtime_prepare: passed
+  environment_status_smoke: passed (Node 22.23.1, npm 10.8.2, pnpm 10.32.1, Git 2.54.0, Python 3.13.5 detected; project dependencies present)
+  default_node_20: blocked by pre-existing undici markAsUncloneable incompatibility; project requires Node >=22
+unresolved:
+  - Real installed-package winget/UAC and project dependency install still require a physical installer-machine smoke test.

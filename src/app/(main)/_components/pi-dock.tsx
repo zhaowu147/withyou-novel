@@ -10,14 +10,10 @@ import {
   ChevronUp,
   CircleStop,
   Code2,
-  Eye,
   FilePenLine,
-  FolderPen,
   GripVertical,
   Loader2,
-  LockKeyhole,
   Send,
-  ShieldCheck,
   Sparkles,
   Undo2,
   X,
@@ -29,7 +25,7 @@ import type { PiFileProposal } from "@/lib/pi/proposal-store";
 import type { PiSourceProposal } from "@/lib/pi/source-proposal-store";
 import { readableApiError, workspaceFetch } from "@/lib/workspaces/client";
 
-type AccessLevel = "observer" | "project" | "source";
+type AccessLevel = "source";
 type DisplayProposal = PiFileProposal | PiSourceProposal;
 
 interface SourceAccessStatus {
@@ -39,6 +35,13 @@ interface SourceAccessStatus {
   expiresAt: string | null;
   testMode?: boolean;
   reason?: string;
+}
+
+interface CodingEnvironmentStatus {
+  ready: boolean;
+  checkedAt: string;
+  tools: Array<{ name: string; available: boolean; version?: string; minimum?: string }>;
+  project?: { packageManager?: string; dependenciesInstalled: boolean; pythonEnvironment?: string };
 }
 
 interface PiMessage {
@@ -122,16 +125,15 @@ export function PiDock() {
   const [novelId, setNovelId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
-  const [accessLevel, setAccessLevel] = useState<AccessLevel>("project");
+  const [accessLevel] = useState<AccessLevel>("source");
   const [messages, setMessages] = useState<PiMessage[]>([]);
   const [activities, setActivities] = useState<PiToolActivity[]>([]);
   const [proposals, setProposals] = useState<DisplayProposal[]>([]);
   const [expandedProposal, setExpandedProposal] = useState<string | null>(null);
   const [sourceStatus, setSourceStatus] = useState<SourceAccessStatus | null>(null);
   const [sourceGrantToken, setSourceGrantToken] = useState("");
-  const [showUnlock, setShowUnlock] = useState(false);
-  const [confirmation, setConfirmation] = useState("");
-  const [unlocking, setUnlocking] = useState(false);
+  const [environmentStatus, setEnvironmentStatus] = useState<CodingEnvironmentStatus | null>(null);
+  const [installingEnvironment, setInstallingEnvironment] = useState(false);
   const [dockPosition, setDockPosition] = useState<DockPosition | null>(null);
   const assistantIdRef = useRef<string | null>(null);
   const dockButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -236,9 +238,9 @@ export function PiDock() {
     savePiWorkspaceState(scopeRef.current, snapshotRef.current);
   }, [activities, input, messages]);
 
-  const switchPiScope = useCallback((nextWorkspaceId: string | null, nextLevel: AccessLevel) => {
+  const switchPiScope = useCallback((nextWorkspaceId: string | null, _nextLevel: AccessLevel = "source") => {
     savePiWorkspaceState(scopeRef.current, snapshotRef.current);
-    const nextScope = nextLevel === "source" ? "source" : `${nextLevel}:${nextWorkspaceId ?? "unbound"}`;
+    const nextScope = `coding:${nextWorkspaceId ?? "unbound"}`;
     scopeRef.current = nextScope;
     const snapshot = loadPiWorkspaceState(nextScope);
     snapshotRef.current = snapshot;
@@ -257,8 +259,7 @@ export function PiDock() {
       requestAbortRef.current = null;
       assistantIdRef.current = null;
       setRunning(false);
-      setAccessLevel("project");
-      switchPiScope(next.workspaceId, "project");
+      switchPiScope(next.workspaceId, "source");
     }
     setWorkspaceId(next.workspaceId);
     setNovelId(next.novelId);
@@ -288,23 +289,41 @@ export function PiDock() {
     if (response.ok && json.success) setSourceStatus(json.data);
   }, [sourceFetch]);
 
+  const loadEnvironmentStatus = useCallback(async () => {
+    if (accessLevel !== "source" || !sourceStatus?.unlocked) {
+      setEnvironmentStatus(null);
+      return;
+    }
+    try {
+      const response = await sourceFetch("/api/pi/environment");
+      const json = await response.json();
+      if (response.ok && json.success) setEnvironmentStatus(json.data);
+    } catch {
+      setEnvironmentStatus(null);
+    }
+  }, [accessLevel, sourceFetch, sourceStatus?.unlocked]);
+
+  const installEnvironment = useCallback(async () => {
+    setInstallingEnvironment(true);
+    try {
+      const response = await sourceFetch("/api/pi/environment", { method: "POST" });
+      const json = await response.json();
+      if (!response.ok || !json.success) throw new Error(json.error || "编程环境安装失败");
+      setEnvironmentStatus(json.data.status);
+      const action = json.data.requiresUserAction?.[0];
+      toast[action ? "warning" : "success"](action || "编程环境与项目依赖检查完成");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "编程环境安装失败");
+    } finally {
+      setInstallingEnvironment(false);
+    }
+  }, [sourceFetch]);
+
   const loadProposals = useCallback(async () => {
-    if (accessLevel === "observer") {
-      setProposals([]);
-      return;
-    }
-    if (accessLevel === "project" && !novelId) {
-      setProposals([]);
-      return;
-    }
-    const url =
-      accessLevel === "source"
-        ? "/api/pi/source/proposals"
-        : `/api/pi/proposals?novelId=${encodeURIComponent(novelId ?? "")}`;
-    const response = await (accessLevel === "source" ? sourceFetch(url) : workspaceFetch(url));
+    const response = await sourceFetch("/api/pi/source/proposals");
     const json = await response.json();
     if (response.ok && json.success) setProposals(json.data);
-  }, [accessLevel, novelId, sourceFetch]);
+  }, [sourceFetch]);
 
   useEffect(() => {
     if (open) {
@@ -313,64 +332,9 @@ export function PiDock() {
     }
   }, [loadProposals, loadSourceStatus, open]);
 
-  const switchLevel = useCallback(
-    (level: AccessLevel) => {
-      if (running) {
-        requestGenerationRef.current += 1;
-        requestAbortRef.current?.abort();
-        requestAbortRef.current = null;
-        assistantIdRef.current = null;
-        setRunning(false);
-        if (accessLevel === "source") {
-          void sourceFetch("/api/pi/source", { method: "DELETE" });
-        } else {
-          const query = novelId ? `?novelId=${encodeURIComponent(novelId)}` : "";
-          void workspaceFetch(`/api/pi${query}`, { method: "DELETE" });
-        }
-      }
-      if (level === "source" && sourceStatus && !sourceStatus.unlocked) {
-        setShowUnlock(true);
-        return;
-      }
-      setAccessLevel(level);
-      switchPiScope(workspaceId, level);
-    },
-    [accessLevel, novelId, running, sourceFetch, sourceStatus, switchPiScope, workspaceId],
-  );
-
-  const unlockSource = useCallback(async () => {
-    setUnlocking(true);
-    try {
-      const response = await workspaceFetch("/api/pi/source/permissions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ confirmation, durationMinutes: 30 }),
-      });
-      const json = await response.json();
-      if (!response.ok || !json.success) throw new Error(json.error || "解锁失败");
-      const { grantToken, ...status } = json.data as SourceAccessStatus & { grantToken: string };
-      setSourceGrantToken(grantToken);
-      setSourceStatus(status);
-      setShowUnlock(false);
-      setConfirmation("");
-      setAccessLevel("source");
-      switchPiScope(workspaceId, "source");
-      toast.success("源码维护权限已解锁 30 分钟");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "解锁失败");
-    } finally {
-      setUnlocking(false);
-    }
-  }, [confirmation, switchPiScope, workspaceId]);
-
-  const lockSource = useCallback(async () => {
-    await sourceFetch("/api/pi/source/permissions", { method: "DELETE" });
-    setSourceGrantToken("");
-    setAccessLevel("project");
-    switchPiScope(workspaceId, "project");
-    await loadSourceStatus();
-    toast.info("源码维护权限已锁定");
-  }, [loadSourceStatus, sourceFetch, switchPiScope, workspaceId]);
+  useEffect(() => {
+    if (open && accessLevel === "source") void loadEnvironmentStatus();
+  }, [accessLevel, loadEnvironmentStatus, open]);
 
   const pendingCount = useMemo(() => proposals.filter((proposal) => proposal.status === "pending").length, [proposals]);
 
@@ -386,11 +350,6 @@ export function PiDock() {
   const sendPrompt = useCallback(async () => {
     const message = input.trim();
     if (!message || running) return;
-    if (accessLevel === "source" && sourceStatus && !sourceStatus.unlocked) {
-      setShowUnlock(true);
-      return;
-    }
-
     const userId = crypto.randomUUID();
     const assistantId = crypto.randomUUID();
     assistantIdRef.current = assistantId;
@@ -408,11 +367,10 @@ export function PiDock() {
     requestAbortRef.current = controller;
 
     try {
-      const url = accessLevel === "source" ? "/api/pi/source" : "/api/pi";
-      const response = await (accessLevel === "source" ? sourceFetch : workspaceFetch)(url, {
+      const response = await sourceFetch("/api/pi", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(accessLevel === "source" ? { message } : { novelId, message, accessLevel }),
+        body: JSON.stringify({ message }),
         signal: controller.signal,
       });
       if (!response.ok || !response.body) {
@@ -466,30 +424,23 @@ export function PiDock() {
         setRunning(false);
       }
     }
-  }, [accessLevel, appendAssistant, input, loadProposals, novelId, running, sourceFetch, sourceStatus?.unlocked]);
+  }, [appendAssistant, input, loadProposals, running, sourceFetch]);
 
   const stop = useCallback(async () => {
     requestGenerationRef.current += 1;
     requestAbortRef.current?.abort();
     requestAbortRef.current = null;
     assistantIdRef.current = null;
-    if (accessLevel === "source") {
-      await sourceFetch("/api/pi/source", { method: "DELETE" });
-    } else {
-      const query = novelId ? `?novelId=${encodeURIComponent(novelId)}` : "";
-      await workspaceFetch(`/api/pi${query}`, { method: "DELETE" });
-    }
+    await sourceFetch("/api/pi", { method: "DELETE" });
     setRunning(false);
-  }, [accessLevel, novelId, sourceFetch]);
+  }, [sourceFetch]);
 
   const decide = useCallback(
     async (proposalId: string, decision: "apply" | "reject" | "rollback") => {
-      if (accessLevel !== "source" && !novelId) return;
-      const url = accessLevel === "source" ? "/api/pi/source/proposals" : "/api/pi/proposals";
-      const response = await (accessLevel === "source" ? sourceFetch : workspaceFetch)(url, {
+      const response = await sourceFetch("/api/pi/source/proposals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(accessLevel === "source" ? { proposalId, decision } : { novelId, proposalId, decision }),
+        body: JSON.stringify({ proposalId, decision }),
       });
       const json = await response.json();
       if (!response.ok || !json.success) {
@@ -499,19 +450,14 @@ export function PiDock() {
       }
       toast.success(
         decision === "apply"
-          ? accessLevel === "source"
-            ? "源码补丁已应用并完成自动类型检查"
-            : "已应用 Pi 的候选改动"
+          ? "代码补丁已应用并完成自动类型检查"
           : decision === "rollback"
             ? "源码补丁已回滚"
             : "已拒绝候选改动",
       );
-      if (accessLevel === "project") {
-        window.dispatchEvent(new CustomEvent("pi-files-changed", { detail: { novelId } }));
-      }
       await loadProposals();
     },
-    [accessLevel, loadProposals, novelId, sourceFetch],
+    [loadProposals, sourceFetch],
   );
 
   return (
@@ -519,8 +465,8 @@ export function PiDock() {
       <button
         ref={dockButtonRef}
         type="button"
-        aria-label="Pi 项目管家，可拖动"
-        title="拖动调整位置，点击打开 Pi"
+        aria-label="Pi coding Agent，可拖动"
+        title="拖动调整位置，点击打开 Pi coding Agent"
         onPointerDown={handleDockPointerDown}
         onPointerMove={handleDockPointerMove}
         onPointerUp={finishDockDrag}
@@ -541,7 +487,7 @@ export function PiDock() {
         <span className="relative flex size-5 items-center justify-center rounded-full bg-foreground text-background">
           π{pendingCount > 0 && <span className="absolute -top-1 -right-1 size-2 rounded-full bg-amber-500" />}
         </span>
-        {accessLevel === "source" ? "Pi · 源码维护" : "Pi · 项目管家"}
+        Pi · Coding Agent
         <span className={`size-1.5 rounded-full ${running ? "bg-amber-500" : "bg-emerald-500"}`} />
       </button>
 
@@ -560,16 +506,10 @@ export function PiDock() {
                   <span className="flex size-7 items-center justify-center rounded-lg bg-foreground text-background">
                     π
                   </span>
-                  {accessLevel === "source" ? "Pi · 源码维护者" : "Pi · 项目管家"}
+                  Pi · Coding Agent
                 </div>
                 <p className="mt-1 text-muted-foreground text-xs">
-                  {accessLevel === "source"
-                    ? sourceStatus?.workspace
-                      ? `源码工作区：${sourceStatus.workspace}`
-                      : "源码工作区不可用"
-                    : novelId
-                      ? `当前项目：${novelId}`
-                      : "尚未选择小说项目"}
+                  {sourceStatus?.workspace ? `代码工作区：${sourceStatus.workspace}` : "代码工作区不可用"}
                 </p>
               </div>
               <button type="button" onClick={() => setOpen(false)} className="rounded-md p-2 hover:bg-accent">
@@ -578,136 +518,38 @@ export function PiDock() {
             </header>
 
             <div className="border-b px-5 py-3">
-              <div className="grid grid-cols-3 gap-2">
+              <div className="flex items-center gap-2 rounded-lg border bg-accent/40 p-3">
+                <Code2 className="size-4" />
+                <div>
+                  <p className="font-medium text-xs">默认 coding Agent</p>
+                  <p className="mt-1 text-[10px] text-muted-foreground">直接理解代码、运行项目检查并提出可审阅补丁</p>
+                </div>
+              </div>
+              <div className="mt-2 flex items-center justify-between rounded-md bg-muted/50 px-2.5 py-1.5 text-[11px]">
+                <span>
+                  编程环境：{environmentStatus ? (environmentStatus.ready ? "已就绪" : "待补齐") : "检查中"}
+                  {environmentStatus?.project && !environmentStatus.project.dependenciesInstalled ? " · 项目依赖未安装" : ""}
+                </span>
                 <button
                   type="button"
-                  onClick={() => switchLevel("observer")}
-                  className={`rounded-lg border p-2 text-left transition ${
-                    accessLevel === "observer" ? "border-foreground bg-accent" : "hover:bg-accent/60"
-                  }`}
+                  onClick={() => void installEnvironment()}
+                  disabled={installingEnvironment}
+                  className="font-medium hover:underline disabled:opacity-50"
                 >
-                  <div className="flex items-center gap-1.5 font-medium text-xs">
-                    <Eye className="size-3.5" />
-                    一级 · 观察
-                  </div>
-                  <p className="mt-1 text-[10px] text-muted-foreground">只读分析</p>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => switchLevel("project")}
-                  className={`rounded-lg border p-2 text-left transition ${
-                    accessLevel === "project" ? "border-foreground bg-accent" : "hover:bg-accent/60"
-                  }`}
-                >
-                  <div className="flex items-center gap-1.5 font-medium text-xs">
-                    <FolderPen className="size-3.5" />
-                    二级 · 项目
-                  </div>
-                  <p className="mt-1 text-[10px] text-muted-foreground">小说候选改动</p>
-                </button>
-                <button
-                  type="button"
-                  disabled={sourceStatus?.available === false}
-                  onClick={() => switchLevel("source")}
-                  className={`rounded-lg border p-2 text-left transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                    accessLevel === "source" ? "border-red-500 bg-red-500/10" : "hover:bg-accent/60"
-                  }`}
-                  title={sourceStatus?.reason}
-                >
-                  <div className="flex items-center gap-1.5 font-medium text-xs">
-                    {sourceStatus?.unlocked ? (
-                      <ShieldCheck className="size-3.5 text-red-500" />
-                    ) : (
-                      <LockKeyhole className="size-3.5" />
-                    )}
-                    三级 · 源码
-                  </div>
-                  <p className="mt-1 text-[10px] text-muted-foreground">
-                    {sourceStatus?.testMode ? "测试中已开放" : sourceStatus?.unlocked ? "临时已解锁" : "最高权限"}
-                  </p>
+                  {installingEnvironment ? "安装中…" : "安装/检查"}
                 </button>
               </div>
-              {accessLevel === "source" && sourceStatus?.unlocked && (
-                <div className="mt-2 flex items-center justify-between rounded-md bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-700 dark:text-red-300">
-                  {sourceStatus.testMode ? (
-                    <span>本地验收模式：三级源码权限持续开放</span>
-                  ) : (
-                    <>
-                      <span>
-                        权限到期：
-                        {sourceStatus.expiresAt
-                          ? new Date(sourceStatus.expiresAt).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })
-                          : "未知"}
-                      </span>
-                      <button type="button" onClick={() => void lockSource()} className="font-medium hover:underline">
-                        立即锁定
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
             </div>
 
             <div className="flex-1 space-y-5 overflow-y-auto p-5">
-              {showUnlock && (
-                <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4">
-                  <div className="flex items-center gap-2 font-semibold text-red-700 text-sm dark:text-red-300">
-                    <Code2 className="size-4" />
-                    解锁源码维护权限
-                  </div>
-                  <p className="mt-2 text-muted-foreground text-xs leading-5">
-                    Pi 将能读取源码、提出补丁并运行白名单检查。补丁仍需你逐项批准，权限 30
-                    分钟后自动失效。请输入下方授权语句：
-                  </p>
-                  <code className="mt-2 block rounded bg-background px-2 py-1.5 text-xs">授权 Pi 修改源码</code>
-                  <input
-                    value={confirmation}
-                    onChange={(event) => setConfirmation(event.target.value)}
-                    className="mt-2 h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-                    placeholder="输入授权语句"
-                  />
-                  <div className="mt-3 flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowUnlock(false);
-                        setConfirmation("");
-                      }}
-                      className="rounded-md border px-3 py-1.5 text-xs hover:bg-accent"
-                    >
-                      取消
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void unlockSource()}
-                      disabled={unlocking || confirmation !== "授权 Pi 修改源码"}
-                      className="rounded-md bg-red-600 px-3 py-1.5 text-white text-xs disabled:opacity-40"
-                    >
-                      {unlocking ? "正在解锁…" : "解锁 30 分钟"}
-                    </button>
-                  </div>
-                </div>
-              )}
-
               {messages.length === 0 && (
                 <div className="rounded-xl border bg-muted/30 p-4">
                   <div className="flex items-center gap-2 font-medium text-sm">
                     <Sparkles className="size-4" />
-                    {accessLevel === "source"
-                      ? "源码维护会话与创作记忆完全隔离"
-                      : accessLevel === "observer"
-                        ? "观察者模式只读项目"
-                        : "我可以理解和整理整个项目"}
+                    "我就是当前项目的 coding Agent"
                   </div>
                   <p className="mt-2 text-muted-foreground text-xs leading-5">
-                    {accessLevel === "source"
-                      ? "Pi 可以定位源码问题、提出文件补丁、运行类型检查或构建，也可以按你的明确要求在桌面创建和更新文本文件。源码补丁仍需逐项批准。"
-                      : accessLevel === "observer"
-                        ? "Pi 可以读取、检索和审查当前小说，但没有提出文件修改的工具。"
-                        : "让我检查设定冲突、整理文件、跨章节追踪人物，或提出文件修改。所有写入都会先形成候选改动，只有你批准后才会落盘。"}
+                    "Pi 会先读取并理解代码，再运行受控的开发命令；修改以可审阅补丁呈现，批准后才写入。软约束用于指导身份和协作方式，路径、命令和敏感信息边界仍由系统硬性执行。"
                   </p>
                 </div>
               )}
@@ -751,7 +593,7 @@ export function PiDock() {
                 <section className="space-y-2">
                   <div className="flex items-center gap-2 font-medium text-sm">
                     <FilePenLine className="size-4" />
-                    {accessLevel === "source" ? "源码候选补丁" : "候选改动"}
+                    代码候选补丁
                     {pendingCount > 0 && (
                       <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-700">
                         {pendingCount} 待处理
@@ -805,7 +647,7 @@ export function PiDock() {
                                     accessLevel === "source" ? "bg-red-600" : "bg-foreground"
                                   }`}
                                 >
-                                  {accessLevel === "source" ? "批准、写入并检查" : "批准并写入"}
+                                  批准、写入并检查
                                 </button>
                               </div>
                             ) : (
@@ -864,11 +706,7 @@ export function PiDock() {
                   disabled={running}
                   rows={2}
                   placeholder={
-                    accessLevel === "source"
-                      ? "交给 Pi 一个源码维护任务…"
-                      : novelId
-                        ? "交给 Pi 一个项目级任务…"
-                        : "先和 Pi 讨论这本书的准备工作…"
+                    "交给 Pi 一个编程任务…"
                   }
                   className="min-h-12 flex-1 resize-none bg-transparent px-2 py-1 text-sm outline-none"
                 />
@@ -881,20 +719,14 @@ export function PiDock() {
                     type="button"
                     onClick={() => void sendPrompt()}
                     disabled={!input.trim()}
-                    className={`rounded-lg p-2 text-white disabled:opacity-40 ${
-                      accessLevel === "source" ? "bg-red-600" : "bg-foreground"
-                    }`}
+                    className="rounded-lg bg-foreground p-2 text-white disabled:opacity-40"
                   >
                     <Send className="size-4" />
                   </button>
                 )}
               </div>
               <p className="mt-2 text-center text-[11px] text-muted-foreground">
-                {accessLevel === "source"
-                  ? "最高权限会话 · 桌面文本可执行 · 源码补丁需批准 · 自动保留检查点"
-                  : accessLevel === "observer"
-                    ? "一级权限 · 只读当前小说项目"
-                    : "二级权限 · 小说文件修改需经你批准"}
+                默认 coding Agent · 受控命令 · 代码补丁需批准 · 自动保留检查点
               </p>
             </footer>
           </aside>

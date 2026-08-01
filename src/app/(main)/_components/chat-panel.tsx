@@ -6,6 +6,9 @@ import { Bot } from "lucide-react";
 
 import { buildToolTakeoverMessage } from "@/lib/agents/session-context";
 import { type ConversationMessage, getConversation, renderConversationCheckpoint } from "@/lib/ai/conversations";
+import { consumeSse } from "@/lib/ai/sse-client";
+import { actOnSemanticContract, createSemanticContract, updateSemanticContract } from "@/lib/semantic-alignment/client";
+import type { SemanticContractEditableFields, SemanticContractEnvelope } from "@/lib/semantic-alignment/types";
 import { countWords } from "@/lib/utils/words";
 import { readableApiError, workspaceFetch } from "@/lib/workspaces/client";
 import { useEntityStore } from "@/stores/entities/entity-store";
@@ -14,6 +17,8 @@ import { usePreferencesStore } from "@/stores/preferences/preferences-provider";
 import { useSessionOwnerStore } from "@/stores/session-owner";
 import { useWorkspaceStatusStore } from "@/stores/workspace-status";
 import type { NovelData } from "@/types/novel";
+
+import { SemanticContractCard } from "./semantic-contract-card";
 
 interface ChatPanelProps {
   novelData: NovelData;
@@ -26,6 +31,31 @@ interface ChatPanelProps {
   toolContext: string | null;
   /** 确认写入文件树后的回调（工具 Agent 退场，写作 Agent 回归） */
   onToolConfirmed?: (finalContent: string) => void;
+}
+
+type PendingSemanticAction =
+  | { kind: "chat"; messages: ConversationMessage[] }
+  | { kind: "chapter"; num: number; message: string; messages: ConversationMessage[] };
+
+interface ChatSseEvent extends Record<string, unknown> {
+  type?: string;
+  content?: string;
+  message?: string;
+  name?: string;
+  args?: Record<string, unknown>;
+  agentId?: string;
+  agentName?: string;
+  compression?: string[];
+  novelId?: string;
+  result?: string;
+  phase?: string;
+  text?: string;
+  success?: boolean;
+  validation?: {
+    passed?: boolean;
+    violatedConstraints?: Array<{ description?: string; evidence?: string }>;
+    unverifiedConstraints?: Array<{ reason?: string }>;
+  };
 }
 
 function toolDisplayName(name: string): string {
@@ -52,7 +82,6 @@ export function ChatPanel({
   onSaveChapter,
   pendingChapterWrite,
   onChapterWritten,
-  toolContext,
   onToolConfirmed,
 }: ChatPanelProps) {
   const sessionOwner = useSessionOwnerStore((s) => s.owner);
@@ -73,6 +102,10 @@ export function ChatPanel({
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [agentProgress, setAgentProgress] = useState<string | null>(null);
+  const [semanticEnvelope, setSemanticEnvelope] = useState<SemanticContractEnvelope | null>(null);
+  const [semanticBusy, setSemanticBusy] = useState(false);
+  const [pendingSemanticAction, setPendingSemanticAction] = useState<PendingSemanticAction | null>(null);
+  const [semanticValidationNotice, setSemanticValidationNotice] = useState<string | null>(null);
   const [generatedChapter, setGeneratedChapter] = useState<{ num: number; content: string } | null>(null);
   const [_pendingCall, setPendingCall] = useState<{ num: number; msg: string; msgs: ConversationMessage[] } | null>(
     null,
@@ -111,6 +144,9 @@ export function ChatPanel({
     setAgentProgress(null);
     setPendingCall(null);
     setInput("");
+    setSemanticEnvelope(null);
+    setPendingSemanticAction(null);
+    setSemanticValidationNotice(null);
     if (sessionOwner !== "writing" && toolSessionCtx) {
       const storedToolMessages = useSessionOwnerStore.getState().toolMessages;
       const takeoverMessages =
@@ -176,16 +212,20 @@ export function ChatPanel({
     const chapterPlan = novelData.detailedOutline || novelData.outline;
     const outline = chapterPlan ? `本章规划依据：${chapterPlan.slice(0, 1200)}` : "";
     const characters = novelData.characters ? `已确认角色：${novelData.characters.slice(0, 800)}` : "";
-    const autoMsg = `请帮我写第 ${num} 章正文。\n${outline}\n${characters}\n要求：2500-3500字，节奏紧凑，每300字一个钩子，章节末尾留悬念。`;
+    const autoMsg = `请帮我写第 ${num} 章正文。\n${outline}\n${characters}\n要求：以本章场景完整和既有细纲为准，节奏紧凑，必须承接上一章未完成动作，不得复写已经发生的事件，不得提前兑现后续终局。`;
     const userMsg = { role: "user" as const, content: autoMsg, timestamp: Date.now() };
     const updated = [...messages, userMsg];
     commitMessages(updated);
     onChapterWritten();
-    // 直接调用 AI。void：有意的即发即忘，callWriteChapter 内部自带 try/catch。
-    void callWriteChapter(num, autoMsg, updated);
+    void beginSemanticAlignment({ kind: "chapter", num, message: autoMsg, messages: updated });
   }, [pendingChapterWrite]);
 
-  const callWriteChapter = async (num: number, autoMsg: string, _updated: ConversationMessage[]) => {
+  const callWriteChapter = async (
+    num: number,
+    autoMsg: string,
+    _updated: ConversationMessage[],
+    semanticContract: { id: string; version: number },
+  ) => {
     const generation = ++requestGenerationRef.current;
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -204,60 +244,21 @@ export function ChatPanel({
         body: JSON.stringify({
           messages: [{ role: "user", content: autoMsg }],
           novelId: novelData.novelId,
+          semanticContractId: semanticContract.id,
+          semanticContractVersion: semanticContract.version,
         }),
         signal: controller.signal,
       });
 
       if (!res.ok || !res.body) throw new Error(await readableApiError(res, "无法启动写作 Agent"));
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
       let aiContent = "";
-      let buffer = "";
       let placeholderIdx = -1;
-      let lastChunkTime = Date.now();
-      const STREAM_TIMEOUT_MS = 120_000; // 2 分钟无新数据则超时
-
-      while (true) {
-        // 给 reader.read() 加超时保护
-        const readPromise = reader.read();
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          const elapsed = Date.now() - lastChunkTime;
-          const remaining = STREAM_TIMEOUT_MS - elapsed;
-          if (remaining <= 0) {
-            reject(new Error("SSE 流超时：2 分钟未收到新数据"));
-            return;
-          }
-          setTimeout(() => reject(new Error("SSE 流超时：2 分钟未收到新数据")), remaining);
-        });
-        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
-        if (requestGenerationRef.current !== generation) return;
-        if (done) break;
-        lastChunkTime = Date.now();
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          let payload: {
-            type?: string;
-            content?: string;
-            agentId?: string;
-            agentName?: string;
-            compression?: string[];
-            novelId?: string;
-            phase?: string;
-            text?: string;
-            name?: string;
-            success?: boolean;
-          };
-          try {
-            payload = JSON.parse(line.slice(6).trim());
-          } catch {
-            continue;
-          }
+      await consumeSse<ChatSseEvent>(res.body, {
+        signal: controller.signal,
+        isActive: () => requestGenerationRef.current === generation,
+        onEvent: async (payload) => {
           if ((payload.type === "chunk" || payload.type === "token") && payload.content) {
-            lastChunkTime = Date.now();
             aiContent += payload.content;
             const cleaned = cleanMarkdown(aiContent);
             setMessages((prev) => {
@@ -295,11 +296,23 @@ export function ChatPanel({
           } else if (payload.type === "done") {
             const cleaned = cleanMarkdown(aiContent);
             setGeneratedChapter({ num, content: cleaned });
+          } else if (payload.type === "semantic_validation" && payload.validation) {
+            const violations = payload.validation.violatedConstraints ?? [];
+            const unverified = payload.validation.unverifiedConstraints ?? [];
+            setSemanticValidationNotice(
+              payload.validation.passed
+                ? `语义验证通过 · 契约 v${semanticContract.version}`
+                : `语义验证未通过：${
+                    violations
+                      .map((item) => `${item.description || "约束偏离"}（${item.evidence || "无证据"}）`)
+                      .join("；") || unverified.map((item) => item.reason || "存在未验证约束").join("；")
+                  }`,
+            );
           } else if (payload.type === "error") {
-            throw new Error("stream error");
+            throw new Error(payload.message || "stream error");
           }
-        }
-      }
+        },
+      });
     } catch (e: unknown) {
       if (!controller.signal.aborted && requestGenerationRef.current === generation) {
         const msg = e instanceof Error ? e.message : "请求失败";
@@ -313,25 +326,6 @@ export function ChatPanel({
       }
     }
   };
-
-  // 章节写入专用 system prompt
-  const _writeChapterSystemPrompt = (num: number, nd: NovelData) =>
-    [
-      `你是网文小说作者。正在创作《${nd.novelName || "未命名"}》的第 ${num} 章。`,
-      ``,
-      `本章细纲锚点：${nd.detailedOutline ? nd.detailedOutline.slice(0, 1600) : nd.outline ? nd.outline.slice(0, 800) : "无"}`,
-      `角色连续性：${nd.characters ? nd.characters.slice(0, 1000) : "无"}`,
-      `世界规则：${nd.worldview ? nd.worldview.slice(0, 800) : "无"}`,
-      ``,
-      `写作要求（必须遵守）：`,
-      `1. 2500-3500 字`,
-      `2. 每 300 字一个钩子/爽点`,
-      `3. 对话+行动 ≥ 70%`,
-      `4. 章末留悬念`,
-      `5. 纯文本，不要任何 markdown`,
-      ``,
-      `正文末尾固定加一句：「第 ${num} 章写完。满意请告诉我「存入第 ${num} 章」，有修改意见请直接说。」`,
-    ].join("\n");
 
   // ─── 实体识别 ───
   const handleEnrichEntities = useCallback(async () => {
@@ -407,38 +401,10 @@ export function ChatPanel({
     return null;
   };
 
-  const handleSend = async () => {
-    const text = input.trim();
-    if (!text || loading) return;
-    setInput("");
-
-    // 检测"存入第X章"指令
-    const saveToChapter = parseChapterSave(text);
-    if (saveToChapter !== null) {
-      // 找最后一条 assistant 消息作为章节内容
-      const lastAi = [...messages].reverse().find((m) => m.role === "assistant" && m.content.length > 50);
-      if (lastAi) {
-        const title = `第${saveToChapter}章`;
-        onSaveChapter(saveToChapter, title, lastAi.content);
-        // 给用户一个确认消息
-        const confirmMsg: ConversationMessage = {
-          role: "assistant",
-          content: `已将上文存入「${title}」。点左侧文件树第 ${saveToChapter} 章查看。`,
-          timestamp: Date.now(),
-        };
-        const final: ConversationMessage[] = [
-          ...messages,
-          { role: "user" as const, content: text, timestamp: Date.now() },
-          confirmMsg,
-        ];
-        commitMessages(final);
-        return;
-      }
-    }
-
-    const userMsg = { role: "user" as const, content: text, timestamp: Date.now() };
-    const updated: ConversationMessage[] = [...messages, userMsg];
-    commitMessages(updated);
+  const executeChatMessages = async (
+    updated: ConversationMessage[],
+    semanticContract: { id: string; version: number },
+  ) => {
     setLoading(true);
     setAgentProgress("正在启动 Agent");
     const generation = ++requestGenerationRef.current;
@@ -459,6 +425,8 @@ export function ChatPanel({
       const requestBody: Record<string, unknown> = {
         messages: updated.map((m) => ({ role: m.role, content: m.content })),
         novelId: novelData.novelId,
+        semanticContractId: semanticContract.id,
+        semanticContractVersion: semanticContract.version,
       };
       if (checkpoint) requestBody.checkpoint = renderConversationCheckpoint(checkpoint);
       if (isToolMode && toolSessionCtx) {
@@ -474,56 +442,13 @@ export function ChatPanel({
 
       if (!res.ok || !res.body) throw new Error(await readableApiError(res, "无法启动写作 Agent"));
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
       let aiContent = "";
-      let buffer = "";
       const latestAiIdx = withPlaceholder.length - 1;
-      let lastChunkTime = Date.now();
-      const STREAM_TIMEOUT_MS = 120_000; // 2 分钟无新数据则超时
-
-      while (true) {
-        const readPromise = reader.read();
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          const elapsed = Date.now() - lastChunkTime;
-          const remaining = STREAM_TIMEOUT_MS - elapsed;
-          if (remaining <= 0) {
-            reject(new Error("SSE 流超时：2 分钟未收到新数据"));
-            return;
-          }
-          setTimeout(() => reject(new Error("SSE 流超时：2 分钟未收到新数据")), remaining);
-        });
-        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
-        if (requestGenerationRef.current !== generation) return;
-        if (done) break;
-        lastChunkTime = Date.now();
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          let payload: {
-            type?: string;
-            content?: string;
-            message?: string;
-            name?: string;
-            args?: Record<string, unknown>;
-            agentId?: string;
-            agentName?: string;
-            compression?: string[];
-            novelId?: string;
-            result?: string;
-            phase?: string;
-            text?: string;
-            success?: boolean;
-          };
-          try {
-            payload = JSON.parse(line.slice(6).trim());
-          } catch {
-            continue;
-          }
+      await consumeSse<ChatSseEvent>(res.body, {
+        signal: controller.signal,
+        isActive: () => requestGenerationRef.current === generation,
+        onEvent: (payload) => {
           if ((payload.type === "chunk" || payload.type === "token") && payload.content) {
-            lastChunkTime = Date.now();
             aiContent += payload.content;
             const cleaned = cleanMarkdown(aiContent);
             setMessages((prev) => {
@@ -550,6 +475,18 @@ export function ChatPanel({
             console.debug("[chat] tool_call", payload.name, payload.args);
           } else if (payload.type === "tool_result") {
             console.debug("[chat] tool_result", payload.name, payload.result?.slice(0, 100));
+          } else if (payload.type === "semantic_validation" && payload.validation) {
+            const violations = payload.validation.violatedConstraints ?? [];
+            const unverified = payload.validation.unverifiedConstraints ?? [];
+            setSemanticValidationNotice(
+              payload.validation.passed
+                ? `语义验证通过 · 契约 v${semanticContract.version}`
+                : `语义验证未通过：${
+                    violations
+                      .map((item) => `${item.description || "约束偏离"}（${item.evidence || "无证据"}）`)
+                      .join("；") || unverified.map((item) => item.reason || "存在未验证约束").join("；")
+                  }`,
+            );
           } else if (payload.type === "done") {
             const cleaned = cleanMarkdown(aiContent);
             const final: ConversationMessage[] = [
@@ -560,8 +497,8 @@ export function ChatPanel({
           } else if (payload.type === "error") {
             throw new Error(payload.message || "stream error");
           }
-        }
-      }
+        },
+      });
     } catch (e: unknown) {
       if (!controller.signal.aborted && requestGenerationRef.current === generation) {
         const msg = e instanceof Error ? e.message : "请求失败";
@@ -576,6 +513,137 @@ export function ChatPanel({
         setAgentProgress(null);
       }
     }
+  };
+
+  const executeSemanticAction = async (
+    action: PendingSemanticAction,
+    semanticContract: { id: string; version: number },
+  ) => {
+    setSemanticEnvelope(null);
+    setPendingSemanticAction(null);
+    setSemanticValidationNotice(null);
+    if (action.kind === "chapter") {
+      await callWriteChapter(action.num, action.message, action.messages, semanticContract);
+      return;
+    }
+    await executeChatMessages(action.messages, semanticContract);
+  };
+
+  const beginSemanticAlignment = async (action: PendingSemanticAction) => {
+    if (!novelData.novelId) {
+      const errorMessage: ConversationMessage = {
+        role: "assistant",
+        content: "当前会话尚未绑定小说，无法建立语义契约。",
+        timestamp: Date.now(),
+      };
+      commitMessages([...action.messages, errorMessage]);
+      return;
+    }
+    setSemanticBusy(true);
+    setSemanticEnvelope(null);
+    setPendingSemanticAction(action);
+    try {
+      const latestUser = [...action.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+      const next = await createSemanticContract({
+        novelId: novelData.novelId,
+        taskKind: sessionOwner === "writing" ? "writer" : "tool_refinement",
+        toolId: sessionOwner === "writing" ? undefined : toolSessionCtx?.toolId,
+        userInput: latestUser,
+      });
+      setSemanticEnvelope(next);
+      if (next.contract.status === "confirmed") {
+        await executeSemanticAction(action, { id: next.contract.id, version: next.contract.version });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "语义解析失败";
+      commitMessages([
+        ...action.messages,
+        { role: "assistant", content: `语义对齐失败：${message}`, timestamp: Date.now() },
+      ]);
+      setPendingSemanticAction(null);
+    } finally {
+      setSemanticBusy(false);
+    }
+  };
+
+  const handleSemanticUpdate = async (fields: SemanticContractEditableFields) => {
+    if (!novelData.novelId || !semanticEnvelope) return;
+    setSemanticBusy(true);
+    try {
+      setSemanticEnvelope(
+        await updateSemanticContract({
+          novelId: novelData.novelId,
+          contractId: semanticEnvelope.contract.id,
+          version: semanticEnvelope.contract.version,
+          fields,
+        }),
+      );
+    } catch (error) {
+      setSemanticValidationNotice(error instanceof Error ? error.message : "保存语义修改失败");
+    } finally {
+      setSemanticBusy(false);
+    }
+  };
+
+  const handleSemanticAction = async (action: "confirm" | "reject" | "reparse", saveAsLongTerm = false) => {
+    if (!novelData.novelId || !semanticEnvelope) return;
+    setSemanticBusy(true);
+    try {
+      const next = await actOnSemanticContract({
+        novelId: novelData.novelId,
+        contractId: semanticEnvelope.contract.id,
+        version: semanticEnvelope.contract.version,
+        action,
+        saveAsLongTerm,
+      });
+      if (action === "reject") {
+        setSemanticEnvelope(null);
+        setPendingSemanticAction(null);
+        return;
+      }
+      setSemanticEnvelope(next);
+      if (action === "confirm" && pendingSemanticAction) {
+        await executeSemanticAction(pendingSemanticAction, {
+          id: next.contract.id,
+          version: next.contract.version,
+        });
+      }
+    } catch (error) {
+      setSemanticValidationNotice(error instanceof Error ? error.message : "语义契约操作失败");
+    } finally {
+      setSemanticBusy(false);
+    }
+  };
+
+  const handleSend = async () => {
+    const text = input.trim();
+    if (!text || loading || semanticBusy || semanticEnvelope) return;
+    setInput("");
+
+    const saveToChapter = parseChapterSave(text);
+    if (saveToChapter !== null) {
+      const lastAi = [...messages]
+        .reverse()
+        .find((message) => message.role === "assistant" && message.content.length > 50);
+      if (lastAi) {
+        const title = `第${saveToChapter}章`;
+        onSaveChapter(saveToChapter, title, lastAi.content);
+        commitMessages([
+          ...messages,
+          { role: "user", content: text, timestamp: Date.now() },
+          {
+            role: "assistant",
+            content: `已将上文存入「${title}」。点左侧文件树第 ${saveToChapter} 章查看。`,
+            timestamp: Date.now(),
+          },
+        ]);
+        return;
+      }
+    }
+
+    const updated: ConversationMessage[] = [...messages, { role: "user", content: text, timestamp: Date.now() }];
+    commitMessages(updated);
+    await beginSemanticAlignment({ kind: "chat", messages: updated });
   };
 
   return (
@@ -679,6 +747,28 @@ export function ChatPanel({
             )}
           </div>
         )}
+        {semanticEnvelope && (
+          <SemanticContractCard
+            contract={semanticEnvelope.contract}
+            history={semanticEnvelope.history}
+            busy={semanticBusy || loading}
+            onUpdate={handleSemanticUpdate}
+            onConfirm={(saveAsLongTerm) => handleSemanticAction("confirm", saveAsLongTerm)}
+            onReparse={() => handleSemanticAction("reparse")}
+            onReject={() => handleSemanticAction("reject")}
+          />
+        )}
+        {semanticValidationNotice && (
+          <div
+            className={`rounded-lg border px-3 py-2 text-xs ${
+              semanticValidationNotice.startsWith("语义验证通过")
+                ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-700"
+                : "border-destructive/30 bg-destructive/5 text-destructive"
+            }`}
+          >
+            {semanticValidationNotice}
+          </div>
+        )}
         {loading && (
           <div className="flex items-start justify-start gap-3">
             <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border bg-background">
@@ -778,14 +868,18 @@ export function ChatPanel({
               }
             }}
             placeholder="告诉 AI 你想写什么..."
+            disabled={semanticBusy || semanticEnvelope !== null}
             className="h-10 w-full rounded-lg border border-input bg-transparent pr-10 pl-3 text-sm outline-none focus:border-[#2D9F5A] focus:ring-2 focus:ring-[#2D9F5A]/20"
           />
           <button
+            type="button"
             onClick={handleSend}
-            disabled={!input.trim() || loading}
+            disabled={!input.trim() || loading || semanticBusy || semanticEnvelope !== null}
+            aria-label="发送消息"
             className="absolute top-1/2 right-2 -translate-y-1/2 cursor-pointer p-1 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <svg
+              aria-hidden="true"
               xmlns="http://www.w3.org/2000/svg"
               width="16"
               height="16"

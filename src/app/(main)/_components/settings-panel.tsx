@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { refreshCompressionConfig } from "@/hooks/use-compression-config";
 import { type AppSettings, DEFAULT_SETTINGS, type ModelProviderConfig, PROVIDERS } from "@/lib/settings/settings-store";
 import { workspaceFetch } from "@/lib/workspaces/client";
@@ -243,6 +244,27 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
         />
 
         <section className="rounded-xl border bg-muted/20 p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="font-semibold text-sm">语义对齐</div>
+              <p className="mt-1 text-muted-foreground text-xs leading-5">
+                低风险、局部且可逆的文字操作可自动确认语义契约。关闭后，所有任务都会先等待你确认理解。
+              </p>
+            </div>
+            <Switch
+              checked={settings.semanticAlignment.autoConfirmLowRisk}
+              onCheckedChange={(checked) =>
+                setSettings((current) => ({
+                  ...current,
+                  semanticAlignment: { autoConfirmLowRisk: checked },
+                }))
+              }
+              aria-label="低风险任务自动确认"
+            />
+          </div>
+        </section>
+
+        <section className="rounded-xl border bg-muted/20 p-4">
           <div className="flex items-center gap-2 font-semibold text-sm">
             <ShieldCheck className="size-4 text-emerald-600" />
             数据与权限边界
@@ -257,7 +279,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               使用彼此独立的模型路由。
             </p>
             <p>
-              Pi 默认只能读取当前作品。修改作品文件需要逐项确认；修改应用源码属于最高权限，并要求单独授权和可回滚提案。
+              Pi 默认就是 coding Agent。它会读取当前代码工作区、运行受控开发命令并提出可审阅补丁；写入仍需逐项确认，且保留可回滚检查点。
             </p>
           </div>
         </section>

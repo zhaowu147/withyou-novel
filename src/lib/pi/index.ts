@@ -24,3 +24,16 @@ export {
   rollbackSourceProposal,
 } from "./source-proposal-store";
 export { abortSourcePi, promptSourcePi } from "./source-runtime";
+export {
+  enabledSourceSkillPaths,
+  installSourceSkill,
+  listSourceSkills,
+  setSourceSkillEnabled,
+  sourceSkillFingerprint,
+  uninstallSourceSkill,
+  type InstallSourceSkillInput,
+  type SourceSkillIntegrity,
+  type SourceSkillRecord,
+  type SourceSkillSource,
+  type SourceSkillView,
+} from "./source-skill-manager";

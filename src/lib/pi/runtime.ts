@@ -6,12 +6,14 @@ import { Type } from "typebox";
 import { projectDir, sanitizeNovelId } from "@/lib/local/paths";
 import { novelFS } from "@/lib/novel-fs";
 import { appStateDir } from "@/lib/runtime/app-paths";
+import { loadUserSkills } from "@/lib/chat/user-skills";
 
 import { createPiModelServices } from "./model";
 import { createPiProposal } from "./proposal-store";
 import type { PiAccessLevel } from "./source-permissions";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 
 export interface PiRuntimeEvent {
   type: "text" | "thinking" | "tool_start" | "tool_end" | "done" | "error";
@@ -34,11 +36,32 @@ const globalForPi = globalThis as typeof globalThis & {
 const sessions = globalForPi.__withyouPiSessions ?? new Map<string, Promise<RuntimeEntry>>();
 globalForPi.__withyouPiSessions = sessions;
 
-const PI_RUNTIME_POLICY_VERSION = 2;
+const PI_RUNTIME_POLICY_VERSION = 3;
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 const PI_WORKSPACE_DRAFT_PREFIX = "workspace-pi-";
 
 type PiCodingAgentModule = typeof import("@earendil-works/pi-coding-agent");
+
+/**
+ * Project skills are deliberately opt-in: only valid SKILL.md files under this
+ * novel's .skills directory are passed to Pi.  Global agent skills, source
+ * maintenance skills and skills from another novel never enter this runtime.
+ */
+function projectSkillPaths(cwd: string, isWorkspaceDraft: boolean): string[] {
+  if (isWorkspaceDraft) return [];
+  return loadUserSkills(cwd).map((skill) => path.resolve(skill.sourcePath));
+}
+
+function projectSkillFingerprint(cwd: string, isWorkspaceDraft: boolean): string {
+  const entries = projectSkillPaths(cwd, isWorkspaceDraft).map((skillPath) => {
+    try {
+      return `${skillPath}:${createHash("sha256").update(fs.readFileSync(skillPath)).digest("hex")}`;
+    } catch {
+      return `${skillPath}:missing`;
+    }
+  });
+  return createHash("sha256").update(entries.join("\n"), "utf8").digest("hex");
+}
 
 async function loadPiCodingAgent(): Promise<PiCodingAgentModule> {
   // Keep this lookup opaque to Turbopack; the dependency is ESM and loads at request time.
@@ -214,6 +237,7 @@ async function createRuntime(
     ? path.join(appStateDir(), "pi-draft-workspaces", workspaceId, accessLevel)
     : projectDir(safeNovelId);
   if (isWorkspaceDraft) fs.mkdirSync(cwd, { recursive: true });
+  const additionalSkillPaths = projectSkillPaths(cwd, isWorkspaceDraft);
   const settingsManager = pi.SettingsManager.inMemory({
     defaultProvider: runtimeProvider,
     defaultModel: config.model,
@@ -222,8 +246,15 @@ async function createRuntime(
     cwd,
     agentDir,
     settingsManager,
+    additionalSkillPaths,
+    skillsOverride: (current) => ({
+      skills: current.skills.filter((skill) =>
+        additionalSkillPaths.some((allowedPath) => path.resolve(skill.filePath) === path.resolve(allowedPath)),
+      ),
+      diagnostics: current.diagnostics,
+    }),
     noExtensions: true,
-    noSkills: true,
+    noSkills: false,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
@@ -263,7 +294,7 @@ async function createRuntime(
   });
   return {
     session,
-    fingerprint: `${fingerprint}:${accessLevel}:policy-${PI_RUNTIME_POLICY_VERSION}`,
+    fingerprint: `${fingerprint}:${accessLevel}:policy-${PI_RUNTIME_POLICY_VERSION}:${projectSkillFingerprint(cwd, isWorkspaceDraft)}`,
   };
 }
 
@@ -275,7 +306,11 @@ async function getRuntime(
   const safeNovelId = sanitizeNovelId(novelId);
   const key = `${workspaceId}:${safeNovelId}:${accessLevel}`;
   const { fingerprint } = await createPiModelServices();
-  const scopedFingerprint = `${fingerprint}:${accessLevel}:policy-${PI_RUNTIME_POLICY_VERSION}`;
+  const isWorkspaceDraft = safeNovelId.startsWith(PI_WORKSPACE_DRAFT_PREFIX);
+  const cwd = isWorkspaceDraft
+    ? path.join(appStateDir(), "pi-draft-workspaces", workspaceId, accessLevel)
+    : projectDir(safeNovelId);
+  const scopedFingerprint = `${fingerprint}:${accessLevel}:policy-${PI_RUNTIME_POLICY_VERSION}:${projectSkillFingerprint(cwd, isWorkspaceDraft)}`;
   const existing = sessions.get(key);
   if (existing) {
     const entry = await existing;

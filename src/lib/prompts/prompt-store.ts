@@ -7,7 +7,8 @@
 
 import "server-only";
 
-import { novelsRoot } from "@/lib/runtime/app-paths";
+import { readJsonFile, writeJsonFile } from "@/lib/local/json-db";
+import { projectDir } from "@/lib/local/paths";
 
 import type { PromptPackage, PromptPackageScope, ToolId } from "./prompt-package";
 import { generatePackageId, getBuiltinPackages } from "./prompt-package";
@@ -18,7 +19,24 @@ const PROMPTS_DIR = "prompts";
 
 /** 获取项目提示词目录 */
 function getPromptsDir(novelId: string): string {
-  return path.join(novelsRoot(), novelId, PROMPTS_DIR);
+  return path.join(projectDir(novelId), PROMPTS_DIR);
+}
+
+function safePackageId(packageId: string): string | null {
+  const normalized = packageId.trim();
+  return /^[a-zA-Z0-9_-]{1,160}$/.test(normalized) ? normalized : null;
+}
+
+function isPromptPackage(value: unknown): value is PromptPackage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const pkg = value as Partial<PromptPackage>;
+  return (
+    typeof pkg.id === "string" &&
+    safePackageId(pkg.id) !== null &&
+    typeof pkg.name === "string" &&
+    typeof pkg.systemPrompt === "string" &&
+    (pkg.scope === "tool" || pkg.scope === "writer" || pkg.scope === "cover")
+  );
 }
 
 /** 确保目录存在 */
@@ -51,16 +69,13 @@ export function readPackage(novelId: string, packageId: string): PromptPackage |
   if (builtin) return builtin;
 
   // 查自定义
+  const safeId = safePackageId(packageId);
+  if (!safeId) return null;
   const promptsDir = getPromptsDir(novelId);
-  const filePath = path.join(promptsDir, `${packageId}.json`);
+  const filePath = path.join(promptsDir, `${safeId}.json`);
   if (!fs.existsSync(filePath)) return null;
-
-  try {
-    const raw = fs.readFileSync(filePath, "utf-8");
-    return JSON.parse(raw) as PromptPackage;
-  } catch {
-    return null;
-  }
+  const parsed = readJsonFile<unknown>(filePath, null);
+  return isPromptPackage(parsed) ? parsed : null;
 }
 
 /** 获取所有提示词包（内置+自定义） */
@@ -81,14 +96,9 @@ export function listCustomPackages(novelId: string, scope?: PromptPackageScope):
   const files = fs.readdirSync(promptsDir).filter((f) => f.endsWith(".json"));
 
   for (const file of files) {
-    try {
-      const raw = fs.readFileSync(path.join(promptsDir, file), "utf-8");
-      const pkg = JSON.parse(raw) as PromptPackage;
-      if (!scope || pkg.scope === scope) {
-        packages.push(pkg);
-      }
-    } catch {
-      // skip malformed
+    const pkg = readJsonFile<unknown>(path.join(promptsDir, file), null);
+    if (isPromptPackage(pkg) && (!scope || pkg.scope === scope)) {
+      packages.push(pkg);
     }
   }
 
@@ -116,17 +126,21 @@ export function savePackage(novelId: string, pkg: PromptPackage): PromptPackage 
     updatedAt: now,
     createdAt: pkg.createdAt || now,
   };
+  const safeId = safePackageId(toSave.id);
+  if (!safeId) throw new Error("提示词包 ID 无效");
 
-  const filePath = path.join(promptsDir, `${toSave.id}.json`);
-  fs.writeFileSync(filePath, JSON.stringify(toSave, null, 2), "utf-8");
+  const filePath = path.join(promptsDir, `${safeId}.json`);
+  writeJsonFile(filePath, toSave);
 
   return toSave;
 }
 
 /** 删除提示词包 */
 export function deletePackage(novelId: string, packageId: string): boolean {
+  const safeId = safePackageId(packageId);
+  if (!safeId) return false;
   const promptsDir = getPromptsDir(novelId);
-  const filePath = path.join(promptsDir, `${packageId}.json`);
+  const filePath = path.join(promptsDir, `${safeId}.json`);
 
   if (!fs.existsSync(filePath)) return false;
 
@@ -144,19 +158,34 @@ interface ActivationState {
   cover: string | null;
 }
 
+function emptyActivationState(): ActivationState {
+  return { tool: {}, writer: null, cover: null };
+}
+
+function normalizeActivationState(value: unknown): ActivationState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return emptyActivationState();
+  const raw = value as Partial<ActivationState>;
+  const tool: Partial<Record<ToolId, string>> = {};
+  if (raw.tool && typeof raw.tool === "object" && !Array.isArray(raw.tool)) {
+    for (const [toolId, packageId] of Object.entries(raw.tool)) {
+      const safeId = typeof packageId === "string" ? safePackageId(packageId) : null;
+      if (safeId) tool[toolId as ToolId] = safeId;
+    }
+  }
+  return {
+    tool,
+    writer: typeof raw.writer === "string" ? safePackageId(raw.writer) : null,
+    cover: typeof raw.cover === "string" ? safePackageId(raw.cover) : null,
+  };
+}
+
 /** 读取激活状态 */
 export function readActivationState(novelId: string): ActivationState {
   const filePath = path.join(getPromptsDir(novelId), ACTIVATION_FILE);
   if (!fs.existsSync(filePath)) {
-    return { tool: {}, writer: null, cover: null };
+    return emptyActivationState();
   }
-
-  try {
-    const raw = fs.readFileSync(filePath, "utf-8");
-    return JSON.parse(raw) as ActivationState;
-  } catch {
-    return { tool: {}, writer: null, cover: null };
-  }
+  return normalizeActivationState(readJsonFile<unknown>(filePath, null));
 }
 
 /** 保存激活状态 */
@@ -165,7 +194,7 @@ export function saveActivationState(novelId: string, state: ActivationState): vo
   ensureDir(promptsDir);
 
   const filePath = path.join(promptsDir, ACTIVATION_FILE);
-  fs.writeFileSync(filePath, JSON.stringify(state, null, 2), "utf-8");
+  writeJsonFile(filePath, normalizeActivationState(state));
 }
 
 /** 激活功能区提示词包 */

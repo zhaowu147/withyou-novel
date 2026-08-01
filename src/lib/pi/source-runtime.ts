@@ -6,10 +6,12 @@ import { Type } from "typebox";
 import { appStateDir } from "@/lib/runtime/app-paths";
 
 import { createPiModelServices } from "./model";
+import { createCodingToolDefinitions } from "./coding-tools";
 import type { PiRuntimeEvent } from "./runtime";
 import { requireSourceAccess } from "./source-permissions";
 import { createSourceProposal, resolveSourceFile } from "./source-proposal-store";
 import { ensureSourceMaintenanceSkill, SOURCE_MAINTENANCE_SKILL_INSTRUCTIONS } from "./source-skill";
+import { enabledSourceSkillPaths, sourceSkillFingerprint } from "./source-skill-manager";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -33,23 +35,23 @@ const globalForSourcePi = globalThis as typeof globalThis & {
   __withyouPiSourceSession?: Promise<SourceRuntimeEntry>;
 };
 
-const SOURCE_RUNTIME_POLICY_VERSION = 4;
+const SOURCE_RUNTIME_POLICY_VERSION = 7;
 
-const SOURCE_SYSTEM_PROMPT = `你是 Pi 的源码维护实例，负责维护 withyou-novel 应用本身。
+const SOURCE_SYSTEM_PROMPT = `你是 Pi，一个嵌入 WithYou Novel 的 coding Agent，负责维护当前代码工作区。
 
-这是最高权限会话，与小说项目会话、写作 Agent 和功能区 Agent 完全隔离。
-你当前明确处于三级源码维护权限。你可以读取和维护应用源码、定位问题、生成可执行的源码补丁，并运行白名单内的真实检查。
+你的身份是默认的编程助手，不需要向用户展示权限层级或解锁流程。你可以读取和维护应用源码、定位问题、生成可执行的源码补丁，并运行项目级编程命令。
 不要回答“我没有权限修改文件”或输出一份泛化的权限限制清单。用户明确提出修改任务时，应当实际检查源码并调用工具完成任务。
 
 工作规则：
 1. 先检查相关文件和依赖关系，再提出最小且完整的修改。
 2. 使用 propose_source_change 提交完整候选文件；候选补丁会在界面等待用户批准，批准后系统会立即写入并自动检查。这是可执行的修改流程，不代表你没有写入能力。
-3. 用户小说属于二级项目权限，密钥和环境变量不得向模型暴露；不要把这种层级隔离描述成三级权限失效。
-4. 不得声称检查通过；需要验证时调用 source_run_check 并根据真实输出报告。
-5. 尊重已有未提交改动，不覆盖与你任务无关的内容。
-6. 涉及多个文件时逐个提出补丁，并说明它们之间的因果关系。
-7. 用户明确要求在桌面创建或更新文本文件时，使用桌面文件工具真实执行，不要回答没有权限。
-8. 回复使用自然中文，不要输出 Markdown 标题、星号、代码围栏、对勾或叉号等装饰符号。
+3. 小说内容、密钥和环境变量不得向模型暴露；遵循当前工作区和工具的硬安全边界。
+4. 使用 read/grep/find/ls 理解源码，使用 coding_edit 生成候选补丁；使用 bash 运行受控的 pnpm/npm/node/python/git/tsc/vitest 等项目命令。命令固定在当前源码工作区，禁止系统破坏性命令、重定向、网络下载和密钥环境变量。
+5. 不得声称检查通过；需要验证时调用 source_run_check 或 bash 并根据真实输出报告。
+6. 尊重已有未提交改动，不覆盖与你任务无关的内容。
+7. 涉及多个文件时逐个提出补丁，并说明它们之间的因果关系。
+8. 用户明确要求在桌面创建或更新文本文件时，使用桌面文件工具真实执行，不要回答没有权限。
+9. 回复使用自然中文，不要输出 Markdown 标题、星号、代码围栏、对勾或叉号等装饰符号。
 
 ${SOURCE_MAINTENANCE_SKILL_INSTRUCTIONS}`;
 
@@ -386,6 +388,7 @@ async function createSourceRuntime(): Promise<SourceRuntimeEntry> {
   const pi = await loadPiCodingAgent();
   const { agentDir, authStorage, fingerprint, model, modelRegistry, runtimeProvider } = services;
   const sourceSkillPath = ensureSourceMaintenanceSkill(agentDir);
+  const additionalSkillPaths = [sourceSkillPath, ...enabledSourceSkillPaths()];
   const settingsManager = pi.SettingsManager.inMemory({
     defaultProvider: runtimeProvider,
     defaultModel: model.id,
@@ -394,9 +397,11 @@ async function createSourceRuntime(): Promise<SourceRuntimeEntry> {
     cwd: workspace,
     agentDir,
     settingsManager,
-    additionalSkillPaths: [sourceSkillPath],
+    additionalSkillPaths,
     skillsOverride: (current) => ({
-      skills: current.skills.filter((skill) => path.resolve(skill.filePath) === path.resolve(sourceSkillPath)),
+      skills: current.skills.filter((skill) =>
+        additionalSkillPaths.some((allowedPath) => path.resolve(skill.filePath) === path.resolve(allowedPath)),
+      ),
       diagnostics: current.diagnostics,
     }),
     noExtensions: true,
@@ -407,7 +412,7 @@ async function createSourceRuntime(): Promise<SourceRuntimeEntry> {
     systemPrompt: SOURCE_SYSTEM_PROMPT,
   });
   await resourceLoader.reload();
-  const customTools = createSourceTools(pi);
+  const customTools = [...createSourceTools(pi), ...createCodingToolDefinitions(pi, workspace)];
   const sessionDirectory = path.join(appStateDir(), "pi-source-sessions");
   const { session } = await pi.createAgentSession({
     cwd: workspace,
@@ -422,13 +427,17 @@ async function createSourceRuntime(): Promise<SourceRuntimeEntry> {
     settingsManager,
     sessionManager: pi.SessionManager.continueRecent(workspace, sessionDirectory),
   });
-  return { session, fingerprint: `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}`, workspace };
+  return {
+    session,
+    fingerprint: `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}:${sourceSkillFingerprint()}`,
+    workspace,
+  };
 }
 
 async function getSourceRuntime(): Promise<SourceRuntimeEntry> {
   const workspace = requireSourceAccess();
   const { fingerprint } = await createPiModelServices();
-  const policyFingerprint = `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}`;
+  const policyFingerprint = `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}:${sourceSkillFingerprint()}`;
   const existing = globalForSourcePi.__withyouPiSourceSession;
   if (existing) {
     const entry = await existing;

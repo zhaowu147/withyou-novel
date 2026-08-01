@@ -5,9 +5,14 @@ import { useCallback, useState } from "react";
 import { BrainCircuit, Check, Database, SearchCheck, X } from "lucide-react";
 import { toast } from "sonner";
 
+import { actOnSemanticContract, createSemanticContract, updateSemanticContract } from "@/lib/semantic-alignment/client";
+import type { SemanticContractEditableFields, SemanticContractEnvelope } from "@/lib/semantic-alignment/types";
 import { readableApiError, workspaceFetch } from "@/lib/workspaces/client";
 
+import { SemanticContractCard } from "./semantic-contract-card";
+
 type WorkbenchAgentId = "planner" | "reviewer" | "memory";
+type ReviewerFocus = "all" | "lore" | "pacing" | "continuity";
 
 interface AgentTrace {
   files: Array<{ path: string; reason: string; chars: number }>;
@@ -63,13 +68,18 @@ const TIER_LABELS: Record<MemoryCandidate["tier"], string> = {
 
 export function AgentWorkbenchPanel({ novelId, onClose }: { novelId: string; onClose: () => void }) {
   const [agentId, setAgentId] = useState<WorkbenchAgentId>("planner");
+  const [reviewerFocus, setReviewerFocus] = useState<ReviewerFocus>("all");
   const [objective, setObjective] = useState("");
   const [running, setRunning] = useState(false);
+  const [progressText, setProgressText] = useState("");
+  const [progress, setProgress] = useState(0);
   const [runId, setRunId] = useState<string | null>(null);
   const [output, setOutput] = useState("");
   const [trace, setTrace] = useState<AgentTrace | null>(null);
   const [candidates, setCandidates] = useState<MemoryCandidate[]>([]);
   const [deciding, setDeciding] = useState<string | null>(null);
+  const [semanticEnvelope, setSemanticEnvelope] = useState<SemanticContractEnvelope | null>(null);
+  const [semanticBusy, setSemanticBusy] = useState(false);
   const selectedAgent = AGENTS.find((agent) => agent.id === agentId) ?? AGENTS[0];
 
   const loadCandidates = useCallback(
@@ -92,12 +102,34 @@ export function AgentWorkbenchPanel({ novelId, onClose }: { novelId: string; onC
     setOutput("");
     setTrace(null);
     setCandidates([]);
+    setSemanticEnvelope(null);
   };
 
-  const runAgent = async () => {
+  const runAgent = async (semanticContract?: { id: string; version: number }) => {
     const task = objective.trim();
-    if (!task || !novelId || running) return;
+    if (!task || !novelId || running || (!semanticContract && semanticBusy)) return;
+    if (!semanticContract) {
+      setSemanticBusy(true);
+      try {
+        const next = await createSemanticContract({
+          novelId,
+          taskKind: "writer",
+          userInput: task,
+        });
+        setSemanticEnvelope(next);
+        if (next.contract.status === "confirmed") {
+          await runAgent({ id: next.contract.id, version: next.contract.version });
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "语义解析失败");
+      } finally {
+        setSemanticBusy(false);
+      }
+      return;
+    }
     setRunning(true);
+    setProgressText("正在启动 Agent 任务…");
+    setProgress(0);
     setRunId(null);
     setOutput("");
     setTrace(null);
@@ -106,20 +138,107 @@ export function AgentWorkbenchPanel({ novelId, onClose }: { novelId: string; onC
       const response = await workspaceFetch("/api/agents/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ novelId, agentId, objective: task }),
+        body: JSON.stringify({
+          novelId,
+          agentId,
+          objective: task,
+          stream: true,
+          reviewerFocus: agentId === "reviewer" ? reviewerFocus : undefined,
+          semanticContractId: semanticContract.id,
+          semanticContractVersion: semanticContract.version,
+        }),
       });
       if (!response.ok) throw new Error(await readableApiError(response, `${selectedAgent.name}运行失败`));
-      const payload = await response.json();
-      const data = payload.data as { runId?: string; output?: string; trace?: AgentTrace } | undefined;
-      if (!data?.runId) throw new Error("Agent 没有返回运行记录");
-      setRunId(data.runId);
-      setOutput(data.output ?? "");
-      setTrace(data.trace ?? null);
-      if (agentId === "memory") await loadCandidates(data.runId);
+      if (!response.body) throw new Error("Agent 没有返回进度流");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let completedRunId = "";
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        const records = buffer.split("\n\n");
+        buffer = records.pop() ?? "";
+        for (const record of records) {
+          const line = record.split("\n").find((item) => item.startsWith("data: "));
+          if (!line) continue;
+          const event = JSON.parse(line.slice(6)) as {
+            type?: string;
+            text?: string;
+            progress?: number;
+            runId?: string;
+            output?: string;
+            trace?: AgentTrace;
+            message?: string;
+          };
+          if (event.type === "agent_progress") {
+            setProgressText(event.text ?? "正在处理任务…");
+            if (typeof event.progress === "number") setProgress(event.progress);
+          } else if (event.type === "result") {
+            completedRunId = event.runId ?? "";
+            setRunId(event.runId ?? null);
+            setOutput(event.output ?? "");
+            setTrace(event.trace ?? null);
+          } else if (event.type === "error") {
+            throw new Error(event.message || `${selectedAgent.name}运行失败`);
+          }
+        }
+      }
+      if (!completedRunId) throw new Error("Agent 没有返回运行记录");
+      setProgress(100);
+      setProgressText("Agent 任务已完成");
+      if (agentId === "memory") await loadCandidates(completedRunId);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Agent 运行失败");
     } finally {
       setRunning(false);
+    }
+  };
+
+  const handleSemanticUpdate = async (fields: SemanticContractEditableFields) => {
+    if (!semanticEnvelope) return;
+    setSemanticBusy(true);
+    try {
+      setSemanticEnvelope(
+        await updateSemanticContract({
+          novelId,
+          contractId: semanticEnvelope.contract.id,
+          version: semanticEnvelope.contract.version,
+          fields,
+        }),
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "保存语义修改失败");
+    } finally {
+      setSemanticBusy(false);
+    }
+  };
+
+  const handleSemanticAction = async (action: "confirm" | "reject" | "reparse", saveAsLongTerm = false) => {
+    if (!semanticEnvelope) return;
+    setSemanticBusy(true);
+    try {
+      const next = await actOnSemanticContract({
+        novelId,
+        contractId: semanticEnvelope.contract.id,
+        version: semanticEnvelope.contract.version,
+        action,
+        saveAsLongTerm,
+      });
+      if (action === "reject") {
+        setSemanticEnvelope(null);
+      } else {
+        setSemanticEnvelope(next);
+      }
+      if (action === "confirm") {
+        setSemanticEnvelope(null);
+        await runAgent({ id: next.contract.id, version: next.contract.version });
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "语义契约操作失败");
+    } finally {
+      setSemanticBusy(false);
     }
   };
 
@@ -191,15 +310,42 @@ export function AgentWorkbenchPanel({ novelId, onClose }: { novelId: string; onC
             placeholder={selectedAgent.placeholder}
             className="mt-3 min-h-28 w-full resize-y rounded-lg border bg-background px-3 py-2 text-sm leading-6 outline-none transition-shadow focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/15"
           />
+          {agentId === "reviewer" && (
+            <label className="mt-2 block text-xs text-foreground/70">
+              审查视角
+              <select
+                value={reviewerFocus}
+                onChange={(event) => setReviewerFocus(event.target.value as ReviewerFocus)}
+                className="mt-1 h-9 w-full rounded-lg border bg-background px-2 text-sm text-foreground outline-none focus:border-emerald-500"
+              >
+                <option value="all">综合审查</option>
+                <option value="lore">设定与世界观</option>
+                <option value="pacing">网文节奏与爽点</option>
+                <option value="continuity">时间线、因果与伏笔</option>
+              </select>
+            </label>
+          )}
           <button
             type="button"
             onClick={() => void runAgent()}
-            disabled={!objective.trim() || !novelId || running}
+            disabled={!objective.trim() || !novelId || running || semanticBusy || semanticEnvelope !== null}
             className="mt-2 flex h-9 w-full items-center justify-center rounded-lg bg-emerald-600 font-medium text-sm text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-45"
           >
-            {running ? "正在读取项目证据…" : `运行${selectedAgent.name} Agent`}
+            {running ? `${progressText || "正在处理…"} ${progress}%` : `运行${selectedAgent.name} Agent`}
           </button>
         </div>
+
+        {semanticEnvelope && (
+          <SemanticContractCard
+            contract={semanticEnvelope.contract}
+            history={semanticEnvelope.history}
+            busy={semanticBusy || running}
+            onUpdate={handleSemanticUpdate}
+            onConfirm={(saveAsLongTerm) => handleSemanticAction("confirm", saveAsLongTerm)}
+            onReparse={() => handleSemanticAction("reparse")}
+            onReject={() => handleSemanticAction("reject")}
+          />
+        )}
 
         {output && (
           <div className="rounded-xl border bg-background p-4">

@@ -33,21 +33,29 @@ export interface UserSkill {
 }
 
 const SKILLS_DIR = ".skills";
+const MAX_SKILL_BYTES = 64 * 1024;
 
 /**
  * 从项目目录加载用户自定义 Skills
  */
 export function loadUserSkills(projectDir: string): UserSkill[] {
-  const skillsDir = path.join(projectDir, SKILLS_DIR);
+  const skillsDir = path.resolve(projectDir, SKILLS_DIR);
   if (!fs.existsSync(skillsDir)) return [];
 
   const skills: UserSkill[] = [];
   for (const dir of fs.readdirSync(skillsDir)) {
     const skillDir = path.join(skillsDir, dir);
-    if (!fs.statSync(skillDir).isDirectory()) continue;
+    const relative = path.relative(skillsDir, skillDir);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+    // Skills are project-owned files. Do not follow a junction/symlink out of
+    // the current novel, otherwise one project's Skill could read another path.
+    const dirStat = fs.lstatSync(skillDir);
+    if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) continue;
 
     const skillFile = path.join(skillDir, "SKILL.md");
     if (!fs.existsSync(skillFile)) continue;
+    const fileStat = fs.lstatSync(skillFile);
+    if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.size > MAX_SKILL_BYTES) continue;
 
     try {
       const skill = parseSkillFile(skillFile, dir);
@@ -72,6 +80,8 @@ export function loadUserSkills(projectDir: string): UserSkill[] {
  *   正文内容...
  */
 function parseSkillFile(filePath: string, dirName: string): UserSkill | null {
+  const stat = fs.lstatSync(filePath);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_SKILL_BYTES) return null;
   const raw = fs.readFileSync(filePath, "utf-8");
   const lines = raw.split("\n");
 
