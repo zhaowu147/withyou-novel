@@ -1,0 +1,120 @@
+/*
+label: With You
+value: with-you
+*/
+
+/*
+ * This is the formal theme extracted from the reviewed top-rail prototype.
+ * Surfaces stay translucent so the page gradient can remain visible beneath
+ * cards, drawers, sheets, and the inset sidebar.
+ */
+:root[data-theme-preset="with-you"] {
+  --radius: 1rem;
+  --card: rgba(255, 255, 253, 0.86);
+  --card-foreground: #1e2522;
+  --popover: rgba(255, 255, 253, 0.94);
+  --popover-foreground: #1e2522;
+  --primary: #307d65;
+  --primary-foreground: #ffffff;
+  --secondary: rgba(188, 231, 214, 0.36);
+  --secondary-foreground: #235b4b;
+  --muted: rgba(227, 234, 230, 0.78);
+  --muted-foreground: #68756f;
+  --accent: rgba(243, 210, 191, 0.48);
+  --accent-foreground: #6d4938;
+  --destructive: #b9574d;
+  --border: rgba(33, 45, 40, 0.12);
+  --input: rgba(255, 255, 255, 0.74);
+  --ring: #70bd9f;
+  --chart-1: #307d65;
+  --chart-2: #7770a6;
+  --chart-3: #d7895e;
+  --chart-4: #d8b85a;
+  --chart-5: #7895bd;
+  --sidebar: rgba(249, 251, 248, 0.76);
+  --sidebar-foreground: #1e2522;
+  --sidebar-primary: #307d65;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(188, 231, 214, 0.42);
+  --sidebar-accent-foreground: #235b4b;
+  --sidebar-border: rgba(33, 45, 40, 0.1);
+  --sidebar-ring: #70bd9f;
+  --background: rgba(245, 247, 244, 0.86);
+  --foreground: #1e2522;
+  --font-display: Georgia, "Times New Roman", "Microsoft YaHei", serif;
+  --shadow-2xs: 0 1px 3px rgba(32, 42, 38, 0.05);
+  --shadow-xs: 0 2px 6px rgba(32, 42, 38, 0.06);
+  --shadow-sm: 0 4px 12px rgba(32, 42, 38, 0.08);
+  --shadow: 0 6px 18px rgba(32, 42, 38, 0.08);
+  --shadow-md: 0 12px 34px rgba(40, 52, 47, 0.1);
+  --shadow-lg: 0 18px 46px rgba(32, 42, 38, 0.14);
+  --shadow-xl: 0 28px 70px rgba(32, 42, 38, 0.18), 0 6px 18px rgba(32, 42, 38, 0.08);
+  --shadow-2xl: 0 34px 90px rgba(32, 42, 38, 0.22), 0 10px 24px rgba(32, 42, 38, 0.1);
+}
+
+.dark:root[data-theme-preset="with-you"] {
+  --card: rgba(28, 39, 35, 0.9);
+  --card-foreground: #edf4ef;
+  --popover: rgba(28, 39, 35, 0.96);
+  --popover-foreground: #edf4ef;
+  --primary: #8ccfb5;
+  --primary-foreground: #16352b;
+  --secondary: rgba(66, 108, 91, 0.42);
+  --secondary-foreground: #e4f4eb;
+  --muted: rgba(52, 69, 62, 0.78);
+  --muted-foreground: #b0c1b8;
+  --accent: rgba(128, 84, 61, 0.4);
+  --accent-foreground: #f8ded0;
+  --destructive: #e17f72;
+  --border: rgba(224, 243, 233, 0.14);
+  --input: rgba(40, 56, 49, 0.88);
+  --ring: #8ccfb5;
+  --chart-1: #8ccfb5;
+  --chart-2: #aaa4e0;
+  --chart-3: #edaa7d;
+  --chart-4: #e7d279;
+  --chart-5: #a9c2e4;
+  --sidebar: rgba(25, 36, 32, 0.9);
+  --sidebar-foreground: #edf4ef;
+  --sidebar-primary: #8ccfb5;
+  --sidebar-primary-foreground: #16352b;
+  --sidebar-accent: rgba(66, 108, 91, 0.48);
+  --sidebar-accent-foreground: #e4f4eb;
+  --sidebar-border: rgba(224, 243, 233, 0.13);
+  --sidebar-ring: #8ccfb5;
+  --background: rgba(20, 29, 26, 0.92);
+  --foreground: #edf4ef;
+  --font-display: Georgia, "Times New Roman", "Microsoft YaHei", serif;
+  --shadow-2xs: 0 1px 3px rgba(0, 0, 0, 0.18);
+  --shadow-xs: 0 2px 6px rgba(0, 0, 0, 0.2);
+  --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.24);
+  --shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 12px 34px rgba(0, 0, 0, 0.28);
+  --shadow-lg: 0 18px 46px rgba(0, 0, 0, 0.34);
+  --shadow-xl: 0 28px 70px rgba(0, 0, 0, 0.4), 0 6px 18px rgba(0, 0, 0, 0.2);
+  --shadow-2xl: 0 34px 90px rgba(0, 0, 0, 0.48), 0 10px 24px rgba(0, 0, 0, 0.24);
+}
+
+:root[data-theme-preset="with-you"] body {
+  background:
+    radial-gradient(circle at 18% 12%, rgba(188, 231, 214, 0.42), transparent 28%),
+    radial-gradient(circle at 84% 0%, rgba(243, 210, 191, 0.38), transparent 24%), var(--background);
+  background-attachment: fixed;
+}
+
+.dark:root[data-theme-preset="with-you"] body {
+  background:
+    radial-gradient(circle at 18% 12%, rgba(54, 111, 88, 0.22), transparent 30%),
+    radial-gradient(circle at 84% 0%, rgba(117, 75, 57, 0.2), transparent 26%), var(--background);
+  background-attachment: fixed;
+}
+
+:root[data-theme-preset="with-you"] ::selection {
+  color: #16352b;
+  background: rgba(188, 231, 214, 0.74);
+}
+
+.dark:root[data-theme-preset="with-you"] ::selection {
+  color: #16352b;
+  background: rgba(140, 207, 181, 0.72);
+}
