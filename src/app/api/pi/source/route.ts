@@ -1,13 +1,9 @@
-import type { PiRuntimeEvent } from "@/lib/pi/runtime";
+import { createPiSseStream } from "@/lib/pi/harness/transport";
 import { authorizeSourceRequest, sourceRequestErrorResponse } from "@/lib/pi/source-request-auth";
 import { abortSourcePi, promptSourcePi, readSourcePiRun } from "@/lib/pi/source-runtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function encodeEvent(event: PiRuntimeEvent): Uint8Array {
-  return new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`);
-}
 
 export async function GET(request: Request): Promise<Response> {
   try {
@@ -38,25 +34,10 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ success: false, error: "缺少 message" }, { status: 400 });
   }
 
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      let closed = false;
-      const send = (event: PiRuntimeEvent) => {
-        if (!closed) controller.enqueue(encodeEvent(event));
-      };
-      void promptSourcePi(auth.workspaceId, auth.novelId, message, send)
-        .then((run) => send({ type: "done", runId: run.id }))
-        .catch((error: unknown) => {
-          send({ type: "error", text: error instanceof Error ? error.message : "源码 Pi 运行失败" });
-        })
-        .finally(() => {
-          closed = true;
-          controller.close();
-        });
-    },
-    async cancel() {
-      await abortSourcePi(auth.workspaceId, auth.novelId);
-    },
+  const stream = createPiSseStream({
+    prompt: (emit) => promptSourcePi(auth.workspaceId, auth.novelId, message, emit),
+    abort: () => abortSourcePi(auth.workspaceId, auth.novelId),
+    errorMessage: "源码 Pi 运行失败",
   });
 
   return new Response(stream, {

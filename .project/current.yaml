@@ -1,7 +1,7 @@
 schema_version: 1
 source_of_truth: disk
 git_role: auxiliary
-last_updated: 2026-08-02
+last_updated: 2026-08-03
 current_branch: agent/landing-glass-cta
 migration_parent_commit: c409526
 origin_main_at_migration: 6d19a79
@@ -50,3 +50,4 @@ notes:
   - CHG-2026-021 第一阶段已完成 Pi harness 协调层：统一管理 coding/source Pi 的进程内 session 复用、fingerprint 替换、单 scope 运行状态、取消和 runId 事件关联；Git 操作按用户要求保持不加锁。3 项 harness 测试、Biome、TypeScript noEmit 和生产构建均通过，后续 durable event replay、集中策略与资源锁仍未实现。
   - CHG-2026-022 第二阶段已为 Pi harness 接入按 workspace/novel scope 隔离的有界事件日志和 runId 回放：运行记录与最近事件采用原子写、备份和跨进程文件锁保存，日志故障只降级当前流；/api/pi 与 /api/pi/source 提供认证后的 GET 回放。4 项测试、Biome、TypeScript noEmit 和生产构建均通过；前端自动重连、集中策略与资源锁仍待后续阶段。
   - CHG-2026-023 第三阶段已完成 Pi 前端断线自动恢复、集中 prompt 规范化策略和 workspace 资源调度：运行先发 run_started，实时/回放事件带 sequence 去重；同一源码工作区的不同 scope 串行，不同工作区可并行，Git 不加锁。5 项测试、Biome、TypeScript noEmit 和生产构建均通过。
+  - CHG-2026-024 第四阶段已将 /api/pi 与 /api/pi/source 的 SSE 启动、终态去重、错误和断开取消收敛到共享 transport；后端验收串联 coordinator、workspace 资源调度、run_started/sequence 实时事件、事件日志持久化回读和取消。Node 24 全量测试 170 项、169 通过、0 失败、1 跳过，Biome、TypeScript noEmit 和生产构建均通过。
