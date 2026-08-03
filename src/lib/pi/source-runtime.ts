@@ -20,7 +20,7 @@ import { appStateDir } from "@/lib/runtime/app-paths";
 
 import { resolveProjectPackageManager } from "./coding-environment";
 import { createCodingToolDefinitions } from "./coding-tools";
-import { type HarnessRun, type HarnessSessionEntry, piHarness } from "./harness/coordinator";
+import { type HarnessRun, type HarnessSessionEntry, type HarnessSnapshot, piHarness } from "./harness/coordinator";
 import { createPiModelServices } from "./model";
 import { createProjectApiToolDefinitions } from "./project-tools";
 import type { PiRuntimeEvent } from "./runtime";
@@ -809,10 +809,25 @@ export async function promptSourcePi(
     scopeKey,
     message,
     getSession: () => getSourceRuntime(workspaceId, novelId),
-    onEvent: (event, run) => forwardEvent(event, (output) => emit({ ...output, runId: run.id })),
+    onEvent: (event, run) =>
+      forwardEvent(event, (output) => {
+        const correlated = { ...output, runId: run.id };
+        piHarness.recordEvent(scopeKey, run.id, correlated);
+        emit(correlated);
+      }),
   });
 }
 
 export async function abortSourcePi(workspaceId: string, novelId: string | null): Promise<void> {
   await piHarness.abort(`${workspaceId}:${novelId ?? "unbound"}`);
+}
+
+export async function readSourcePiRun(
+  workspaceId: string,
+  novelId: string | null,
+  runId: string,
+  afterSequence = 0,
+): Promise<HarnessSnapshot> {
+  requireSourceAccess();
+  return piHarness.readSnapshot(`${workspaceId}:${novelId ?? "unbound"}`, runId, afterSequence);
 }

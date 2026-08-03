@@ -1,0 +1,58 @@
+id: CHG-2026-022
+title: Add bounded Pi harness event journal and replay endpoint
+status: completed
+created_at: 2026-08-03
+purpose: >-
+  Extend the first Pi harness boundary with a small, bounded local event journal
+  so a dropped SSE connection can recover the current run and recent events by
+  runId without changing the AgentSession tool policy or Git behavior.
+baseline:
+  source: current disk state after CHG-2026-021
+  evidence:
+    - src/lib/pi/harness/coordinator.ts
+    - src/lib/pi/source-runtime.ts
+    - src/app/api/pi/route.ts
+    - src/app/api/pi/source/route.ts
+scope:
+  included:
+    - Persist process-local Pi run metadata and bounded correlated output events under the application state directory.
+    - Expose authenticated GET replay for the existing Pi endpoints with scope and runId checks.
+    - Flush queued events at run completion and tolerate journal I/O failures without breaking the active Pi response.
+    - Keep Git operations unlocked as explicitly requested.
+  excluded:
+    - Cross-machine coordination or distributed queues.
+    - New tool permissions, sandbox policy, or model changes.
+    - Automatic frontend reconnect behavior; this phase exposes the safe replay contract for the existing client.
+expected_files:
+  - src/lib/pi/harness/event-store.ts
+  - src/lib/pi/harness/coordinator.ts
+  - src/lib/pi/source-runtime.ts
+  - src/lib/pi/runtime.ts
+  - src/lib/pi/index.ts
+  - src/app/api/pi/route.ts
+  - src/app/api/pi/source/route.ts
+  - tests/pi-harness.test.ts
+validation:
+  - Harness unit tests including event snapshot behavior
+  - TypeScript noEmit
+  - Production build
+completed_at: 2026-08-03
+actual_files:
+  - src/lib/pi/harness/event-store.ts
+  - src/lib/pi/harness/coordinator.ts
+  - src/lib/pi/source-runtime.ts
+  - src/lib/pi/runtime.ts
+  - src/lib/pi/index.ts
+  - src/app/api/pi/route.ts
+  - src/app/api/pi/source/route.ts
+  - tests/pi-harness.test.ts
+validation_results:
+  - Pi harness and journal tests: 4 passed, 0 failed
+  - Biome check: passed
+  - TypeScript noEmit: passed
+  - Next.js production build: passed
+decisions:
+  - Git operations remain unlocked; no Git lock was added.
+  - The current UI keeps its existing SSE behavior; automatic reconnect is exposed as an authenticated GET replay contract for a later client phase.
+  - Journal I/O errors are logged and isolated from the active Pi stream.
+revision: 2

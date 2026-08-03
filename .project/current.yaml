@@ -48,3 +48,4 @@ notes:
   - CHG-2026-019 已将功能区的大纲和角色工具改为自然语言任务入口试点：默认只需描述创作意图，旧字段收进高级设置；语义契约继续负责事实/推断确认，服务端与前端同步允许缺少非核心前置时继续。Node 24 全量测试 164 项、163 通过、0 失败、1 跳过，类型检查和生产构建通过；其他功能仍待迁移。
   - CHG-2026-020 已将审查通过的顶部轨道原型视觉语言落成正式 With You 主题：新会话默认使用浅色青绿/桃色渐变、半透明卡片、统一圆角阴影和 Georgia 展示标题字体，同时保留既有主题预设与用户选择。Biome 检查、TypeScript noEmit 和生产构建均通过。
   - CHG-2026-021 第一阶段已完成 Pi harness 协调层：统一管理 coding/source Pi 的进程内 session 复用、fingerprint 替换、单 scope 运行状态、取消和 runId 事件关联；Git 操作按用户要求保持不加锁。3 项 harness 测试、Biome、TypeScript noEmit 和生产构建均通过，后续 durable event replay、集中策略与资源锁仍未实现。
+  - CHG-2026-022 第二阶段已为 Pi harness 接入按 workspace/novel scope 隔离的有界事件日志和 runId 回放：运行记录与最近事件采用原子写、备份和跨进程文件锁保存，日志故障只降级当前流；/api/pi 与 /api/pi/source 提供认证后的 GET 回放。4 项测试、Biome、TypeScript noEmit 和生产构建均通过；前端自动重连、集中策略与资源锁仍待后续阶段。

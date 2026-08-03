@@ -8,7 +8,7 @@ import { projectDir, sanitizeNovelId } from "@/lib/local/paths";
 import { novelFS } from "@/lib/novel-fs";
 import { appStateDir } from "@/lib/runtime/app-paths";
 
-import { type HarnessRun, piHarness } from "./harness/coordinator";
+import { type HarnessRun, type HarnessSnapshot, piHarness } from "./harness/coordinator";
 import { createPiModelServices } from "./model";
 import { createPiProposal } from "./proposal-store";
 import type { PiAccessLevel } from "./source-permissions";
@@ -348,11 +348,27 @@ export async function promptPi(
     scopeKey,
     message,
     getSession: () => getRuntime(workspaceId, safeNovelId, accessLevel),
-    onEvent: (event, run) => forwardEvent(event, (output) => emit({ ...output, runId: run.id })),
+    onEvent: (event, run) =>
+      forwardEvent(event, (output) => {
+        const correlated = { ...output, runId: run.id };
+        piHarness.recordEvent(scopeKey, run.id, correlated);
+        emit(correlated);
+      }),
   });
 }
 
 export async function abortPi(workspaceId: string, novelId: string): Promise<void> {
   const prefix = `${workspaceId}:${sanitizeNovelId(novelId)}:`;
   await piHarness.abortMatching(prefix);
+}
+
+export async function readPiRun(
+  workspaceId: string,
+  novelId: string,
+  runId: string,
+  accessLevel: Exclude<PiAccessLevel, "source"> = "project",
+  afterSequence = 0,
+): Promise<HarnessSnapshot> {
+  const safeNovelId = sanitizeNovelId(novelId);
+  return piHarness.readSnapshot(`${workspaceId}:${safeNovelId}:${accessLevel}`, runId, afterSequence);
 }

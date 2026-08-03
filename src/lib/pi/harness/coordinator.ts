@@ -1,6 +1,9 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
+import { type HarnessEventInput, type HarnessSnapshot, PiHarnessEventStore } from "./event-store";
 import { randomUUID } from "node:crypto";
+
+export type { HarnessSnapshot } from "./event-store";
 
 export type HarnessRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
@@ -19,20 +22,41 @@ export interface HarnessSessionEntry {
   fingerprint: string;
 }
 
+export interface HarnessEventRecord {
+  sequence: number;
+  runId: string;
+  occurredAt: string;
+  event: unknown;
+}
+
+interface PiHarnessCoordinatorOptions {
+  journal?: PiHarnessEventStore;
+}
+
 type HarnessAgentEventHandler<TEvent> = (event: TEvent, run: Readonly<HarnessRun>) => void;
 
 /**
  * Owns process-local Pi sessions and the lifecycle of one prompt execution.
  *
  * Persistence of the Pi transcript remains delegated to SessionManager. This
- * coordinator deliberately keeps the first phase small: durable run events,
- * replay, policy, and resource locks will be layered on top of this boundary.
+ * The event journal is deliberately bounded and local. The Pi transcript itself
+ * remains delegated to SessionManager, while this layer keeps enough correlated
+ * output to recover a dropped SSE connection.
  */
 export class PiHarnessCoordinator {
+  private readonly journal?: PiHarnessEventStore;
   private readonly sessions = new Map<string, Promise<HarnessSessionEntry>>();
   private readonly activeSessions = new Map<string, Promise<HarnessSessionEntry>>();
   private readonly runs = new Map<string, HarnessRun>();
   private readonly activeRuns = new Map<string, string>();
+  private readonly events = new Map<string, HarnessEventRecord[]>();
+  private readonly pendingEvents = new Map<string, HarnessEventInput[]>();
+  private readonly pendingWrites = new Map<string, Promise<void>>();
+  private readonly eventTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  constructor(options: PiHarnessCoordinatorOptions = {}) {
+    this.journal = options.journal;
+  }
 
   async getOrCreateSession<TEntry extends HarnessSessionEntry>(
     scopeKey: string,
@@ -80,6 +104,7 @@ export class PiHarnessCoordinator {
     };
     this.runs.set(run.id, run);
     this.activeRuns.set(input.scopeKey, run.id);
+    this.queueRunSave(input.scopeKey, run);
 
     try {
       const sessionPromise = Promise.resolve().then(input.getSession);
@@ -87,16 +112,19 @@ export class PiHarnessCoordinator {
       const entry = await sessionPromise;
       if (entry.session.isStreaming) throw new Error("Pi 正在处理上一项任务");
       run.status = "running";
+      this.queueRunSave(input.scopeKey, run);
 
       const unsubscribe = entry.session.subscribe((event) => input.onEvent(event as TEvent, run));
       try {
         await entry.session.prompt(input.message);
         if ((run.status as HarnessRunStatus) !== "cancelled") run.status = "completed";
+        this.queueRunSave(input.scopeKey, run);
       } catch (error) {
         if ((run.status as HarnessRunStatus) !== "cancelled") {
           run.status = "failed";
           run.error = error instanceof Error ? error.message : String(error);
         }
+        this.queueRunSave(input.scopeKey, run);
         throw error;
       } finally {
         unsubscribe();
@@ -107,11 +135,14 @@ export class PiHarnessCoordinator {
         run.status = "failed";
         run.error = error instanceof Error ? error.message : String(error);
       }
+      this.queueRunSave(input.scopeKey, run);
       throw error;
     } finally {
       run.finishedAt = new Date().toISOString();
+      this.queueRunSave(input.scopeKey, run);
       if (this.activeRuns.get(input.scopeKey) === run.id) this.activeRuns.delete(input.scopeKey);
       if (this.activeSessions.get(input.scopeKey)) this.activeSessions.delete(input.scopeKey);
+      await this.flush(input.scopeKey);
       this.pruneRuns();
     }
   }
@@ -122,7 +153,10 @@ export class PiHarnessCoordinator {
     if (!runId || !pending) return false;
 
     const run = this.runs.get(runId);
-    if (run && (run.status === "queued" || run.status === "running")) run.status = "cancelled";
+    if (run && (run.status === "queued" || run.status === "running")) {
+      run.status = "cancelled";
+      this.queueRunSave(scopeKey, run);
+    }
     const entry = await pending;
     await entry.session.abort();
     return true;
@@ -144,11 +178,92 @@ export class PiHarnessCoordinator {
     return runId ? this.getRun(runId) : undefined;
   }
 
+  recordEvent(scopeKey: string, runId: string, event: unknown): void {
+    const current = this.events.get(scopeKey) ?? [];
+    const next: HarnessEventRecord = {
+      sequence: (current.at(-1)?.sequence ?? 0) + 1,
+      runId,
+      occurredAt: new Date().toISOString(),
+      event,
+    };
+    current.push(next);
+    this.events.set(scopeKey, current.slice(-2_000));
+    if (!this.journal) return;
+
+    const pending = this.pendingEvents.get(scopeKey) ?? [];
+    pending.push({ runId, event, occurredAt: next.occurredAt });
+    this.pendingEvents.set(scopeKey, pending);
+    if (pending.length >= 20) {
+      void this.flushEvents(scopeKey);
+    } else if (!this.eventTimers.has(scopeKey)) {
+      const timer = setTimeout(() => {
+        this.eventTimers.delete(scopeKey);
+        void this.flushEvents(scopeKey);
+      }, 100);
+      this.eventTimers.set(scopeKey, timer);
+    }
+  }
+
+  async readSnapshot(scopeKey: string, runId: string, afterSequence = 0): Promise<HarnessSnapshot> {
+    await this.flush(scopeKey);
+    const run = this.runs.get(runId);
+    if (run && run.scopeKey === scopeKey) {
+      return {
+        run: { ...run },
+        events: (this.events.get(scopeKey) ?? []).filter(
+          (event) => event.runId === runId && event.sequence > afterSequence,
+        ),
+      };
+    }
+    if (!this.journal) return { events: [] };
+    return this.journal.readSnapshot(scopeKey, runId, afterSequence);
+  }
+
+  private queueRunSave(scopeKey: string, run: HarnessRun): void {
+    if (!this.journal) return;
+    this.queueWrite(scopeKey, () => this.journal?.saveRun(scopeKey, run));
+  }
+
+  private queueWrite(scopeKey: string, operation: () => Promise<void> | undefined): void {
+    const previous = this.pendingWrites.get(scopeKey) ?? Promise.resolve();
+    const next = previous
+      .then(() => operation())
+      .catch((error) => console.warn(`[pi-harness] 事件日志写入失败（本次运行继续）: ${String(error)}`));
+    this.pendingWrites.set(scopeKey, next);
+  }
+
+  private async flushEvents(scopeKey: string): Promise<void> {
+    if (!this.journal) return;
+    const pending = this.pendingEvents.get(scopeKey);
+    if (!pending?.length) return;
+    this.pendingEvents.delete(scopeKey);
+    this.queueWrite(scopeKey, () => this.journal?.appendEvents(scopeKey, pending));
+  }
+
+  private async flush(scopeKey: string): Promise<void> {
+    const timer = this.eventTimers.get(scopeKey);
+    if (timer) {
+      clearTimeout(timer);
+      this.eventTimers.delete(scopeKey);
+    }
+    await this.flushEvents(scopeKey);
+    const pending = this.pendingWrites.get(scopeKey);
+    if (pending) await pending;
+    if (this.pendingEvents.has(scopeKey)) await this.flush(scopeKey);
+    if (!this.activeRuns.has(scopeKey) && !this.pendingEvents.has(scopeKey)) this.pendingWrites.delete(scopeKey);
+  }
+
   private pruneRuns(): void {
-    if (this.runs.size <= 200) return;
-    for (const [runId, run] of this.runs) {
-      if (this.runs.size <= 150) break;
-      if (!this.activeRuns.has(run.scopeKey)) this.runs.delete(runId);
+    if (this.runs.size > 200) {
+      for (const [runId, run] of this.runs) {
+        if (this.runs.size <= 150) break;
+        if (!this.activeRuns.has(run.scopeKey)) this.runs.delete(runId);
+      }
+    }
+    if (this.events.size <= 200) return;
+    for (const scopeKey of this.events.keys()) {
+      if (this.events.size <= 150) break;
+      if (!this.activeRuns.has(scopeKey)) this.events.delete(scopeKey);
     }
   }
 }
@@ -157,5 +272,6 @@ const globalForPiHarness = globalThis as typeof globalThis & {
   __withyouPiHarness?: PiHarnessCoordinator;
 };
 
-export const piHarness = globalForPiHarness.__withyouPiHarness ?? new PiHarnessCoordinator();
+export const piHarness =
+  globalForPiHarness.__withyouPiHarness ?? new PiHarnessCoordinator({ journal: new PiHarnessEventStore() });
 globalForPiHarness.__withyouPiHarness = piHarness;

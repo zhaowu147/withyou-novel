@@ -1,7 +1,12 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
 import { PiHarnessCoordinator } from "../src/lib/pi/harness/coordinator";
+import { PiHarnessEventStore } from "../src/lib/pi/harness/event-store";
+import { resetDataRootCache } from "../src/lib/runtime/app-paths";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { test } from "node:test";
 
 function fakeSession(options: { blockPrompt?: boolean } = {}) {
@@ -84,13 +89,21 @@ test("harness correlates events with a completed run", async () => {
     scopeKey: "scope",
     message: "检查项目",
     getSession: async () => ({ session: entry.session, fingerprint: "v1" }),
-    onEvent: (_event, currentRun) => runIds.push(currentRun.id),
+    onEvent: (_event, currentRun) => {
+      runIds.push(currentRun.id);
+      harness.recordEvent("scope", currentRun.id, { type: "text", text: "ok" });
+    },
   });
 
   assert.equal(run.status, "completed");
   assert.equal(runIds.length, 1);
   assert.equal(runIds[0], run.id);
   assert.equal(harness.getActiveRun("scope"), undefined);
+  const snapshot = await harness.readSnapshot("scope", run.id);
+  assert.equal(snapshot.run?.status, "completed");
+  assert.equal(snapshot.events.length, 1);
+  assert.deepEqual(snapshot.events[0]?.event, { type: "text", text: "ok" });
+  assert.equal((await harness.readSnapshot("scope", run.id, snapshot.events[0]?.sequence ?? 0)).events.length, 0);
 });
 
 test("harness rejects a second run and can cancel the active one", async () => {
@@ -110,4 +123,34 @@ test("harness rejects a second run and can cancel the active one", async () => {
   const result = await first;
   assert.equal(result.status, "cancelled");
   assert.equal(entry.aborted, true);
+});
+
+test("harness journal reopens a scoped run and replays events", async () => {
+  const previousDataDir = process.env.WITHYOU_DATA_DIR;
+  const tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "withyou-pi-harness-"));
+  fs.mkdirSync(path.join(tempDataDir, ".data"), { recursive: true });
+  process.env.WITHYOU_DATA_DIR = tempDataDir;
+  resetDataRootCache();
+  try {
+    const run = {
+      id: "persisted-run",
+      scopeKey: "persisted-scope",
+      message: "读取项目",
+      status: "completed" as const,
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+    };
+    const firstStore = new PiHarnessEventStore();
+    await firstStore.saveRun(run.scopeKey, run);
+    await firstStore.appendEvents(run.scopeKey, [{ runId: run.id, event: { type: "text", text: "已读取" } }]);
+
+    const reopened = await new PiHarnessEventStore().readSnapshot(run.scopeKey, run.id);
+    assert.equal(reopened.run?.id, run.id);
+    assert.deepEqual(reopened.events[0]?.event, { type: "text", text: "已读取" });
+  } finally {
+    if (previousDataDir === undefined) delete process.env.WITHYOU_DATA_DIR;
+    else process.env.WITHYOU_DATA_DIR = previousDataDir;
+    resetDataRootCache();
+    fs.rmSync(tempDataDir, { recursive: true, force: true });
+  }
 });

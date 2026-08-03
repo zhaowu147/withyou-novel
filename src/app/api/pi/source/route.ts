@@ -1,12 +1,28 @@
 import type { PiRuntimeEvent } from "@/lib/pi/runtime";
 import { authorizeSourceRequest, sourceRequestErrorResponse } from "@/lib/pi/source-request-auth";
-import { abortSourcePi, promptSourcePi } from "@/lib/pi/source-runtime";
+import { abortSourcePi, promptSourcePi, readSourcePiRun } from "@/lib/pi/source-runtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function encodeEvent(event: PiRuntimeEvent): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+export async function GET(request: Request): Promise<Response> {
+  try {
+    const auth = await authorizeSourceRequest(request);
+    const url = new URL(request.url);
+    const runId = url.searchParams.get("runId")?.trim();
+    if (!runId || runId.length > 160) return Response.json({ success: false, error: "runId 无效" }, { status: 400 });
+    const parsedAfter = Number(url.searchParams.get("after") ?? "0");
+    const after = Number.isFinite(parsedAfter) ? Math.max(0, Math.floor(parsedAfter)) : 0;
+    const snapshot = await readSourcePiRun(auth.workspaceId, auth.novelId, runId, after);
+    if (!snapshot.run) return Response.json({ success: false, error: "运行记录不存在" }, { status: 404 });
+    return Response.json({ success: true, run: snapshot.run, events: snapshot.events });
+  } catch (error) {
+    return sourceRequestErrorResponse(error);
+  }
 }
 
 export async function POST(request: Request): Promise<Response> {
