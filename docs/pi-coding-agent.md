@@ -2,6 +2,8 @@
 
 Pi 现在默认就是项目级 coding agent。它使用 Pi SDK 的 read、grep、find、ls、bash 工具理解和验证源码，并使用 `coding_edit` 生成可审阅的完整补丁。源码补丁不会绕过界面审批直接写入，批准后仍保留 Git 检查点并支持回滚。
 
+Pi 的 Shell、环境探测/准备、源码检查和 Git/GitHub 进程调用都经过 `src/lib/pi/execution-backend.ts` 的 `PiExecutionBackend`。默认后端仍调用本机系统进程；Electron 宿主或确定性验收可以注入替换后端，不会绕过上层的命令白名单、路径边界、密钥脱敏和 Git 用户意图门禁。
+
 ## 首次使用
 
 1. 打开 Pi 面板，Pi 默认以 coding Agent 身份工作。

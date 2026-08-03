@@ -52,3 +52,4 @@ notes:
   - CHG-2026-023 第三阶段已完成 Pi 前端断线自动恢复、集中 prompt 规范化策略和 workspace 资源调度：运行先发 run_started，实时/回放事件带 sequence 去重；同一源码工作区的不同 scope 串行，不同工作区可并行，Git 不加锁。5 项测试、Biome、TypeScript noEmit 和生产构建均通过。
   - CHG-2026-024 第四阶段已将 /api/pi 与 /api/pi/source 的 SSE 启动、终态去重、错误和断开取消收敛到共享 transport；后端验收串联 coordinator、workspace 资源调度、run_started/sequence 实时事件、事件日志持久化回读和取消。Node 24 全量测试 170 项、169 通过、0 失败、1 跳过，Biome、TypeScript noEmit 和生产构建均通过。
   - CHG-2026-025 第五阶段已为 Pi harness 增加跨进程资源租约：资源键哈希落盘、按排序顺序获取多资源租约、proper-lockfile 心跳续租与崩溃后陈旧租约恢复；每个运行通过 AbortController 取消本地及跨进程排队等待。仅完成 Biome 静态检查；运行测试与生产构建按用户要求延期。Git 仍不加锁，worker/child-process AgentSession 隔离另行处理。
+  - CHG-2026-026 已补齐 Pi 故障注入与断线回放验收，并保留项目章节并发写入/检查点回滚验收；SSE 断开默认脱离运行，显式 DELETE 才中止任务。Shell、环境探测/准备、源码检查和 Git/GitHub 进程调用统一经过可替换 PiExecutionBackend，默认仍使用系统进程实现。Node 24 全量测试 173 项、172 通过、0 失败、1 跳过，Biome、TypeScript noEmit 和生产构建均通过。

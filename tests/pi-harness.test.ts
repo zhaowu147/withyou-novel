@@ -55,6 +55,9 @@ function fakeSession(options: { blockPrompt?: boolean } = {}) {
     get aborted() {
       return aborted;
     },
+    get streaming() {
+      return streaming;
+    },
   };
 }
 
@@ -118,7 +121,10 @@ test("harness rejects a second run and can cancel the active one", async () => {
   };
 
   const first = harness.prompt(input);
-  await new Promise((resolve) => setImmediate(resolve));
+  for (let attempt = 0; attempt < 20 && !entry.streaming; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(entry.streaming, true);
   await assert.rejects(() => harness.prompt(input), /上一项任务/);
   assert.equal(await harness.abort("scope"), true);
   const result = await first;

@@ -5,9 +5,9 @@ import { minimatch } from "minimatch";
 import { Type } from "typebox";
 
 import { getCodingEnvironmentStatus, installCodingEnvironment } from "./coding-environment";
+import { getPiExecutionBackend, type PiExecutionBackend } from "./execution-backend";
 import { createSourceProposal, decideSourceProposal } from "./source-proposal-store";
 import { installSourceSkill } from "./source-skill-manager";
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -162,10 +162,13 @@ function redactProgramOutput(output: string, limit = MAX_OUTPUT): string {
     .slice(-limit);
 }
 
-function killProcessTree(child: ReturnType<typeof spawn>): void {
+function killProcessTree(child: ReturnType<PiExecutionBackend["spawn"]>, backend: PiExecutionBackend): void {
   if (!child.pid) return;
   if (process.platform === "win32") {
-    spawn("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
+    backend.spawn("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
   } else {
     child.kill("SIGKILL");
   }
@@ -175,13 +178,14 @@ function runCommand(
   root: string,
   command: string,
   options: Parameters<NonNullable<BashOperations["exec"]>>[2],
+  backend: PiExecutionBackend,
 ): Promise<{ exitCode: number | null }> {
   validateCodingCommand(command);
   const timeout = Math.min(Math.max(options.timeout ?? 120_000, 1_000), 10 * 60_000);
   const shell = process.platform === "win32" ? process.env.ComSpec || "cmd.exe" : "/bin/sh";
   const args = process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-lc", command];
   return new Promise((resolve) => {
-    const child = spawn(shell, args, {
+    const child = backend.spawn(shell, args, {
       cwd: root,
       env: (() => {
         const env = sanitizeEnvironment();
@@ -213,13 +217,13 @@ function runCommand(
     child.on("error", () => finish(null));
     child.on("close", (code) => finish(code));
     const timer = setTimeout(() => {
-      killProcessTree(child);
+      killProcessTree(child, backend);
       finish(null);
     }, timeout);
     options.signal?.addEventListener(
       "abort",
       () => {
-        killProcessTree(child);
+        killProcessTree(child, backend);
         finish(null);
       },
       { once: true },
@@ -233,9 +237,10 @@ function runProgram(
   args: string[],
   timeout = 30_000,
   maxOutput = MAX_OUTPUT,
+  backend: PiExecutionBackend,
 ): Promise<ProgramResult> {
   return new Promise((resolve) => {
-    const child = spawn(executable, args, {
+    const child = backend.spawn(executable, args, {
       cwd: root,
       env: sanitizeEnvironment(),
       windowsHide: true,
@@ -260,7 +265,7 @@ function runProgram(
     });
     child.on("close", (code) => finish(code));
     const timer = setTimeout(() => {
-      killProcessTree(child);
+      killProcessTree(child, backend);
       output += "\n命令超时后已停止";
       finish(null);
     }, timeout);
@@ -387,7 +392,7 @@ function decodeGitHubFile(raw: string): string {
   return content;
 }
 
-function createEnvironmentTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
+function createEnvironmentTools(pi: CodingPiModule, root: string, backend: PiExecutionBackend): AnyToolDefinition[] {
   const status = pi.defineTool({
     name: "coding_environment_status",
     label: "检查编程环境",
@@ -396,7 +401,7 @@ function createEnvironmentTools(pi: CodingPiModule, root: string): AnyToolDefini
     executionMode: "sequential",
     parameters: Type.Object({}),
     execute: async () => {
-      const environment = getCodingEnvironmentStatus(root);
+      const environment = getCodingEnvironmentStatus(root, backend);
       return toolText(JSON.stringify(environment, null, 2), { ready: environment.ready });
     },
   });
@@ -429,7 +434,7 @@ function createEnvironmentTools(pi: CodingPiModule, root: string): AnyToolDefini
     }),
     execute: async (_id, rawParams) => {
       const params = rawParams as { tools?: Array<"node" | "git" | "python" | "java" | "dotnet" | "go" | "rust"> };
-      const result = installCodingEnvironment(root, params.tools);
+      const result = installCodingEnvironment(root, params.tools, backend);
       const response = {
         ready: result.status.ready,
         tools: result.status.tools.map(({ name, available, version, minimum, error }) => ({
@@ -454,7 +459,9 @@ function createEnvironmentTools(pi: CodingPiModule, root: string): AnyToolDefini
   return [status, prepare];
 }
 
-function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
+function createGitTools(pi: CodingPiModule, root: string, backend: PiExecutionBackend): AnyToolDefinition[] {
+  const run = (executable: string, args: string[], timeout = 30_000, maxOutput = MAX_OUTPUT) =>
+    runProgram(root, executable, args, timeout, maxOutput, backend);
   const repositoryStatus = pi.defineTool({
     name: "git_repository_status",
     label: "检查 Git 仓库状态",
@@ -465,8 +472,8 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
     parameters: Type.Object({}),
     execute: async () => {
       const [status, remotes] = await Promise.all([
-        runProgram(root, "git", ["status", "--short", "--branch"]),
-        runProgram(root, "git", ["remote", "-v"]),
+        run("git", ["status", "--short", "--branch"]),
+        run("git", ["remote", "-v"]),
       ]);
       return toolText(
         `Git 状态：\n${programText(status, "工作区没有改动")}\n\n远端：\n${programText(remotes, "未配置远端")}`,
@@ -497,7 +504,7 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
       for (const candidate of paths) {
         if (!fs.existsSync(path.join(root, candidate))) throw new Error(`待提交文件不存在：${candidate}`);
       }
-      const stagedBefore = await runProgram(root, "git", ["diff", "--cached", "--name-only"]);
+      const stagedBefore = await run("git", ["diff", "--cached", "--name-only"]);
       const alreadyStaged = programText(stagedBefore, "")
         .split(/\r?\n/)
         .map((candidate) => candidate.trim().replaceAll("\\", "/"))
@@ -506,9 +513,9 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
       if (unrelatedStaged.length > 0) {
         throw new Error(`暂存区已有不属于本次任务的文件，已拒绝提交：${unrelatedStaged.join(", ")}`);
       }
-      const staged = await runProgram(root, "git", ["add", "--", ...paths]);
+      const staged = await run("git", ["add", "--", ...paths]);
       programText(staged, "已暂存指定文件");
-      const result = await runProgram(root, "git", ["commit", "-m", message], 90_000);
+      const result = await run("git", ["commit", "-m", message], 90_000);
       return toolText(programText(result, "已创建 Git 提交"));
     },
   });
@@ -522,7 +529,7 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
     executionMode: "sequential",
     parameters: Type.Object({}),
     execute: async () => {
-      const result = await runProgram(root, "git", ["push"], 120_000);
+      const result = await run("git", ["push"], 120_000);
       return toolText(programText(result, "Git 推送完成"));
     },
   });
@@ -535,7 +542,7 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
     executionMode: "sequential",
     parameters: Type.Object({}),
     execute: async () => {
-      const result = await runProgram(root, "gh", ["auth", "status", "--hostname", "github.com"]);
+      const result = await run("gh", ["auth", "status", "--hostname", "github.com"]);
       if (result.exitCode !== 0) throw new Error("GitHub CLI 当前未连接，请在本机完成 GitHub 登录后再试");
       return toolText("GitHub CLI 已连接，可检索仓库和代码，也可通过 Git 推送当前工作区。");
     },
@@ -550,7 +557,7 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
     parameters: Type.Object({ query: Type.String(), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }),
     execute: async (_id, rawParams) => {
       const params = rawParams as { query: string; limit?: number };
-      const result = await runProgram(root, "gh", [
+      const result = await run("gh", [
         "search",
         "repos",
         validateSearchQuery(params.query),
@@ -572,7 +579,7 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
     parameters: Type.Object({ query: Type.String(), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }),
     execute: async (_id, rawParams) => {
       const params = rawParams as { query: string; limit?: number };
-      const result = await runProgram(root, "gh", [
+      const result = await run("gh", [
         "search",
         "code",
         validateSearchQuery(params.query),
@@ -594,7 +601,7 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
     parameters: Type.Object({ repository: Type.String() }),
     execute: async (_id, rawParams) => {
       const params = rawParams as { repository: string };
-      const result = await runProgram(root, "gh", [
+      const result = await run("gh", [
         "repo",
         "view",
         validateGitHubRepository(params.repository),
@@ -619,7 +626,7 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
     execute: async (_id, rawParams) => {
       const params = rawParams as { query: string; limit?: number };
       const query = validateSearchQuery(params.query);
-      const result = await runProgram(root, "gh", [
+      const result = await run("gh", [
         "search",
         "code",
         query,
@@ -677,8 +684,7 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
       const params = rawParams as { repository: string; path: string };
       const repository = validateGitHubRepository(params.repository);
       const skillPath = validateGitHubSkillPath(params.path);
-      const result = await runProgram(
-        root,
+      const result = await run(
         "gh",
         ["api", `repos/${repository}/contents/${skillPath}`],
         30_000,
@@ -705,8 +711,7 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
       const params = rawParams as { repository: string; path: string };
       const repository = validateGitHubRepository(params.repository);
       const skillPath = validateGitHubSkillPath(params.path);
-      const result = await runProgram(
-        root,
+      const result = await run(
         "gh",
         ["api", `repos/${repository}/contents/${skillPath}`],
         30_000,
@@ -745,7 +750,12 @@ function createGitTools(pi: CodingPiModule, root: string): AnyToolDefinition[] {
   ];
 }
 
-export function createCodingToolDefinitions(pi: CodingPiModule, root: string): AnyToolDefinition[] {
+export function createCodingToolDefinitions(
+  pi: CodingPiModule,
+  root: string,
+  options: { executionBackend?: PiExecutionBackend } = {},
+): AnyToolDefinition[] {
+  const backend = options.executionBackend ?? getPiExecutionBackend();
   const safeRead = {
     readFile: async (absolute: string) => fs.promises.readFile(safePath(root, relativePath(root, absolute))),
     access: async (absolute: string) =>
@@ -771,7 +781,7 @@ export function createCodingToolDefinitions(pi: CodingPiModule, root: string): A
     readdir: (absolute: string) => fs.readdirSync(safePath(root, relativePath(root, absolute))),
   };
   const bashOperations: BashOperations = {
-    exec: (command, _cwd, options) => runCommand(root, command, options),
+    exec: (command, _cwd, options) => runCommand(root, command, options, backend),
   };
   return [
     pi.createReadToolDefinition(root, { operations: safeRead }),
@@ -780,7 +790,7 @@ export function createCodingToolDefinitions(pi: CodingPiModule, root: string): A
     pi.createLsToolDefinition(root, { operations: safeLs }),
     pi.createBashToolDefinition(root, { operations: bashOperations }),
     createEditTool(pi, root),
-    ...createEnvironmentTools(pi, root),
-    ...createGitTools(pi, root),
+    ...createEnvironmentTools(pi, root, backend),
+    ...createGitTools(pi, root, backend),
   ];
 }

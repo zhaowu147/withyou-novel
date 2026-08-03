@@ -20,6 +20,7 @@ import { appStateDir } from "@/lib/runtime/app-paths";
 
 import { resolveProjectPackageManager } from "./coding-environment";
 import { createCodingToolDefinitions } from "./coding-tools";
+import { getPiExecutionBackend, type PiExecutionBackend } from "./execution-backend";
 import { type HarnessRun, type HarnessSessionEntry, type HarnessSnapshot, piHarness } from "./harness/coordinator";
 import { PI_HARNESS_POLICY_VERSION } from "./harness/policy";
 import { createPiModelServices } from "./model";
@@ -41,7 +42,6 @@ import {
   setSourceSkillEnabled,
   sourceSkillFingerprint,
 } from "./source-skill-manager";
-import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -195,8 +195,9 @@ function sourceFiles(workspace: string, prefix = ""): string[] {
 function runCommand(
   workspace: string,
   command: "typecheck" | "build" | "git_status" | "git_diff",
+  backend: PiExecutionBackend,
 ): { ok: boolean; output: string } {
-  const packageManager = resolveProjectPackageManager(workspace);
+  const packageManager = resolveProjectPackageManager(workspace, backend);
   const definitions = {
     typecheck: packageManager
       ? {
@@ -226,7 +227,7 @@ function runCommand(
   if (!selected) {
     return { ok: false, output: "未找到 pnpm、npm 或可用的 Corepack，请先运行 coding_environment_prepare" };
   }
-  const result = spawnSync(selected.executable, [...selected.args], {
+  const result = backend.spawnSync(selected.executable, [...selected.args], {
     cwd: workspace,
     encoding: "utf8",
     timeout: selected.timeout,
@@ -271,7 +272,11 @@ function compactPromptPackage(pkg: ReturnType<typeof readPackage>) {
   };
 }
 
-function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): ToolDefinition[] {
+function createSourceTools(
+  pi: PiCodingAgentModule,
+  novelId: string | null,
+  backend: PiExecutionBackend,
+): ToolDefinition[] {
   const listFiles = pi.defineTool({
     name: "source_list_files",
     label: "查看源码文件",
@@ -348,7 +353,7 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
         proposedContent: params.content,
         summary: params.summary,
       });
-      const applied = decideSourceProposal(proposal.id, "apply");
+      const applied = decideSourceProposal(proposal.id, "apply", backend);
       return textResult(
         `源码已应用：${applied.filePath}\n检查点 ID：${applied.id}\n自动检查：${applied.validation?.ok ? "通过" : "失败"}\n${applied.validation?.output ?? "未运行检查"}`,
         {
@@ -376,7 +381,7 @@ function createSourceTools(pi: PiCodingAgentModule, novelId: string | null): Too
     }),
     execute: async (_id, params) => {
       const workspace = requireSourceAccess();
-      const result = runCommand(workspace, params.command);
+      const result = runCommand(workspace, params.command, backend);
       return {
         ...textResult(result.output, { command: params.command, ok: result.ok }),
         isError: !result.ok,
@@ -714,6 +719,7 @@ async function createSourceRuntime(workspaceId: string, novelId: string | null):
   const services = await createPiModelServices();
   const pi = await loadPiCodingAgent();
   const { agentDir, authStorage, fingerprint, model, modelRegistry, runtimeProvider } = services;
+  const executionBackend = getPiExecutionBackend();
   const sourceSkillPath = ensureSourceMaintenanceSkill(agentDir);
   const additionalSkillPaths = [sourceSkillPath, ...enabledSourceSkillPaths()];
   const settingsManager = pi.SettingsManager.inMemory({
@@ -740,9 +746,9 @@ async function createSourceRuntime(workspaceId: string, novelId: string | null):
   });
   await resourceLoader.reload();
   const customTools = [
-    ...createSourceTools(pi, novelId),
+    ...createSourceTools(pi, novelId, executionBackend),
     ...createProjectApiToolDefinitions(pi, novelId),
-    ...createCodingToolDefinitions(pi, workspace),
+    ...createCodingToolDefinitions(pi, workspace, { executionBackend }),
   ];
   const sessionDirectory = path.join(appStateDir(), "pi-source-sessions", workspaceId, novelId ?? "unbound");
   const { session } = await pi.createAgentSession({

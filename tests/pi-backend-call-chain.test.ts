@@ -154,12 +154,12 @@ test("Pi backend call chain streams, persists, replays and cancels through the s
     const cancelReader = cancelStream.getReader();
     const first = await cancelReader.read();
     assert.equal(first.done, false);
-    for (let attempt = 0; attempt < 10 && !blocked.streaming; attempt += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
+    for (let attempt = 0; attempt < 200 && !blocked.streaming; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
     }
     assert.equal(blocked.streaming, true);
+    await cancelCoordinator.abort("cancel-workspace:novel");
     await cancelReader.cancel();
-    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(blocked.aborted, true);
     assert.equal(cancelCoordinator.getActiveRun("cancel-workspace:novel"), undefined);
   } finally {

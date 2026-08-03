@@ -1,0 +1,59 @@
+id: CHG-2026-026
+title: Add Pi fault-injection acceptance and replaceable execution backend
+status: completed
+created_at: 2026-08-03
+purpose: >-
+  Close the remaining Pi resilience gaps by making fault injection and reconnect
+  recovery executable acceptance paths, while moving shell, environment and Git
+  process calls behind a replaceable backend with the existing system behavior
+  as the default.
+baseline:
+  source: current disk state after CHG-2026-025
+  evidence:
+    - src/app/(main)/_components/pi-dock.tsx
+    - src/lib/pi/coding-tools.ts
+    - src/lib/pi/coding-environment.ts
+    - src/lib/pi/source-proposal-store.ts
+    - src/lib/pi/harness/transport.ts
+    - tests/project-api-runtime.test.ts
+scope:
+  included:
+    - Add deterministic fault-injection seams for transport and journal failure acceptance.
+    - Add reconnect acceptance covering a dropped live stream, sequence replay and terminal completion.
+    - Keep concurrent chapter write and checkpoint rollback acceptance explicit and in the full test command.
+    - Define a replaceable PiExecutionBackend and migrate Shell, environment and Git process calls to it.
+    - Preserve default system process behavior, path/command/secret safety and explicit Git user-intent gates.
+  excluded:
+    - New model providers or changes to Pi prompts and tool permissions.
+    - Worker-thread or child-process AgentSession isolation.
+    - Git-specific locking.
+validation:
+  - Targeted Pi fault/reconnect/backend acceptance tests
+  - Existing project API concurrency and rollback acceptance
+  - Full test suite, TypeScript, Biome and production build
+revision: 1
+completed_at: 2026-08-03
+actual_files:
+  - src/lib/pi/execution-backend.ts
+  - src/lib/pi/coding-tools.ts
+  - src/lib/pi/coding-environment.ts
+  - src/lib/pi/source-proposal-store.ts
+  - src/lib/pi/source-runtime.ts
+  - src/lib/pi/harness/transport.ts
+  - tests/pi-fault-reconnect-backend.test.ts
+  - tests/pi-harness.test.ts
+  - tests/pi-backend-call-chain.test.ts
+  - package.json
+  - docs/pi-coding-agent.md
+validation_results:
+  targeted_acceptance: 10 passed
+  full_project_tests: 173 total, 172 passed, 0 failed, 1 skipped
+  typescript_no_emit: passed
+  biome: passed
+  production_build: passed
+decisions:
+  - SSE disconnect detaches by default so a dropped client can recover through the journal; explicit DELETE remains the user stop path.
+  - Fault injection is an explicit transport seam and does not activate in production routes unless supplied by a caller.
+  - PiExecutionBackend defaults to the system child-process implementation and can be replaced by an embedding host or deterministic test backend.
+  - Shell command validation, environment secret redaction, Git intent gates and path boundaries remain above the backend boundary.
+unresolved: []

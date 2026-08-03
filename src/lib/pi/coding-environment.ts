@@ -2,7 +2,7 @@ import "server-only";
 
 import { appStateDir } from "@/lib/runtime/app-paths";
 
-import { spawnSync } from "node:child_process";
+import { getPiExecutionBackend, type PiExecutionBackend } from "./execution-backend";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -68,9 +68,9 @@ function executableName(name: CodingToolName): string {
   return name;
 }
 
-function runVersion(executable: string): { version?: string; error?: string } {
+function runVersion(executable: string, backend: PiExecutionBackend): { version?: string; error?: string } {
   try {
-    const result = spawnSync(executable, ["--version"], {
+    const result = backend.spawnSync(executable, ["--version"], {
       encoding: "utf8",
       timeout: 5_000,
       windowsHide: true,
@@ -86,13 +86,13 @@ function runVersion(executable: string): { version?: string; error?: string } {
   }
 }
 
-function findExecutable(name: CodingToolName): string | undefined {
+function findExecutable(name: CodingToolName, backend: PiExecutionBackend): string | undefined {
   const candidate = executableName(name);
   if (process.platform !== "win32") {
-    const result = spawnSync("which", [candidate], { encoding: "utf8", timeout: 5_000 });
+    const result = backend.spawnSync("which", [candidate], { encoding: "utf8", timeout: 5_000 });
     return result.status === 0 ? candidate : undefined;
   }
-  const result = spawnSync("where.exe", [candidate], { encoding: "utf8", timeout: 5_000, windowsHide: true });
+  const result = backend.spawnSync("where.exe", [candidate], { encoding: "utf8", timeout: 5_000, windowsHide: true });
   if (result.status !== 0) return undefined;
   // Return the command name instead of the localized `where.exe` path. This
   // avoids OEM-codepage corruption for usernames containing CJK characters and
@@ -100,21 +100,21 @@ function findExecutable(name: CodingToolName): string | undefined {
   return candidate;
 }
 
-function findCommand(command: string): string | undefined {
+function findCommand(command: string, backend: PiExecutionBackend): string | undefined {
   if (process.platform !== "win32") {
-    const result = spawnSync("which", [command], { encoding: "utf8", timeout: 5_000 });
+    const result = backend.spawnSync("which", [command], { encoding: "utf8", timeout: 5_000 });
     return result.status === 0 ? command : undefined;
   }
   const candidate = process.platform === "win32" && !/\.(cmd|bat|exe)$/i.test(command) ? `${command}.cmd` : command;
-  const result = spawnSync("where.exe", [candidate], { encoding: "utf8", timeout: 5_000, windowsHide: true });
+  const result = backend.spawnSync("where.exe", [candidate], { encoding: "utf8", timeout: 5_000, windowsHide: true });
   return result.status === 0 ? candidate : undefined;
 }
 
-function toolStatus(name: CodingToolName): CodingToolStatus {
+function toolStatus(name: CodingToolName, backend: PiExecutionBackend): CodingToolStatus {
   const minimum = name === "node" ? ">=22" : name === "python" ? ">=3.11" : undefined;
-  const executable = findExecutable(name);
+  const executable = findExecutable(name, backend);
   if (!executable) return { name, required: name === "node" || name === "git", available: false, minimum };
-  const result = runVersion(executable);
+  const result = runVersion(executable, backend);
   const versionMatch = result.version?.match(/(?:v|python )?(\d+)(?:\.(\d+))?/i);
   const major = versionMatch ? Number(versionMatch[1]) : 0;
   const minor = versionMatch ? Number(versionMatch[2] ?? 0) : 0;
@@ -141,10 +141,13 @@ export function projectPackageManager(root: string): "pnpm" | "npm" | undefined 
  * contains pnpm. Corepack is a compatibility bridge for Node installations
  * that ship pnpm support without a global pnpm command.
  */
-export function resolveProjectPackageManager(root: string): ProjectPackageManagerInvocation | undefined {
+export function resolveProjectPackageManager(
+  root: string,
+  backend: PiExecutionBackend = getPiExecutionBackend(),
+): ProjectPackageManagerInvocation | undefined {
   const manager = projectPackageManager(root);
   if (!manager) return undefined;
-  const direct = findExecutable(manager);
+  const direct = findExecutable(manager, backend);
   if (direct) {
     return {
       manager,
@@ -154,7 +157,7 @@ export function resolveProjectPackageManager(root: string): ProjectPackageManage
     };
   }
   if (manager === "pnpm") {
-    const corepack = findCommand("corepack");
+    const corepack = findCommand("corepack", backend);
     if (corepack) {
       return {
         manager: "corepack-pnpm",
@@ -218,9 +221,12 @@ export function codingEnvironmentRoot(): string {
   return path.join(appStateDir(), "coding-environment");
 }
 
-export function getCodingEnvironmentStatus(root = process.cwd()): CodingEnvironmentStatus {
+export function getCodingEnvironmentStatus(
+  root = process.cwd(),
+  backend: PiExecutionBackend = getPiExecutionBackend(),
+): CodingEnvironmentStatus {
   const tools = (["node", "npm", "pnpm", "git", "python", "java", "dotnet", "go", "rust"] as CodingToolName[]).map(
-    toolStatus,
+    (tool) => toolStatus(tool, backend),
   );
   const requiredReady = tools.filter((tool) => tool.required).every((tool) => tool.available);
   const pnpmReady = tools.find((tool) => tool.name === "pnpm")?.available;
@@ -246,9 +252,13 @@ function safeInstallerEnvironment(): NodeJS.ProcessEnv {
   return environment;
 }
 
-function runInstaller(executable: string, args: string[]): { ok: boolean; output: string } {
+function runInstaller(
+  executable: string,
+  args: string[],
+  backend: PiExecutionBackend,
+): { ok: boolean; output: string } {
   try {
-    const result = spawnSync(executable, args, {
+    const result = backend.spawnSync(executable, args, {
       encoding: "utf8",
       timeout: 15 * 60_000,
       windowsHide: true,
@@ -265,30 +275,39 @@ function runInstaller(executable: string, args: string[]): { ok: boolean; output
 export function installCodingEnvironment(
   root = process.cwd(),
   requestedTools: CodingToolName[] = [],
+  backend: PiExecutionBackend = getPiExecutionBackend(),
 ): CodingEnvironmentInstallResult {
   const attempted: string[] = [];
   const output: string[] = [];
   const requiresUserAction: string[] = [];
-  let status = getCodingEnvironmentStatus(root);
+  let status = getCodingEnvironmentStatus(root, backend);
 
   const installTargets = new Set<CodingToolName>(["node", "git", "python", ...requestedTools]);
   if (process.platform === "win32") {
-    const winget = spawnSync("where.exe", ["winget.exe"], { encoding: "utf8", timeout: 5_000, windowsHide: true });
+    const winget = backend.spawnSync("where.exe", ["winget.exe"], {
+      encoding: "utf8",
+      timeout: 5_000,
+      windowsHide: true,
+    });
     if (winget.status === 0) {
       for (const tool of status.tools) {
         if (tool.available || !installTargets.has(tool.name) || !(tool.name in WINDOWS_INSTALLERS)) continue;
         const id = WINDOWS_INSTALLERS[tool.name as keyof typeof WINDOWS_INSTALLERS];
         attempted.push(`winget install ${id}`);
-        const result = runInstaller("winget.exe", [
-          "install",
-          "--id",
-          id,
-          "--exact",
-          "--scope",
-          "user",
-          "--accept-source-agreements",
-          "--accept-package-agreements",
-        ]);
+        const result = runInstaller(
+          "winget.exe",
+          [
+            "install",
+            "--id",
+            id,
+            "--exact",
+            "--scope",
+            "user",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+          ],
+          backend,
+        );
         output.push(`${id}: ${result.output}`);
       }
     } else {
@@ -298,13 +317,13 @@ export function installCodingEnvironment(
     requiresUserAction.push("当前平台不提供自动系统依赖安装，请手动安装 Node.js 22、Git 和 Python 3.11+。");
   }
 
-  status = getCodingEnvironmentStatus(root);
+  status = getCodingEnvironmentStatus(root, backend);
   const manager = status.project?.packageManager;
   if (manager && !status.project?.dependenciesInstalled) {
-    let invocation = resolveProjectPackageManager(root);
+    let invocation = resolveProjectPackageManager(root, backend);
     if (!invocation && manager === "pnpm") {
-      const npm = findExecutable("npm");
-      const corepack = findCommand("corepack");
+      const npm = findExecutable("npm", backend);
+      const corepack = findCommand("corepack", backend);
       if (corepack) {
         invocation = {
           manager: "corepack-pnpm",
@@ -314,15 +333,15 @@ export function installCodingEnvironment(
         };
       } else if (npm) {
         attempted.push(`${npm} install --global pnpm`);
-        const bootstrapped = runInstaller(npm, ["install", "--global", "pnpm"]);
+        const bootstrapped = runInstaller(npm, ["install", "--global", "pnpm"], backend);
         output.push(`pnpm 准备: ${bootstrapped.output}`);
-        invocation = bootstrapped.ok ? resolveProjectPackageManager(root) : undefined;
+        invocation = bootstrapped.ok ? resolveProjectPackageManager(root, backend) : undefined;
       }
     }
     if (invocation) {
       const args = [...invocation.prefixArgs, "install", ...(manager === "pnpm" ? ["--frozen-lockfile"] : [])];
       attempted.push(`${invocation.displayName} ${args.slice(invocation.prefixArgs.length).join(" ")}`);
-      const result = runInstaller(invocation.executable, args);
+      const result = runInstaller(invocation.executable, args, backend);
       output.push(`项目依赖: ${result.output}`);
       if (!result.ok)
         requiresUserAction.push(
@@ -341,7 +360,7 @@ export function installCodingEnvironment(
     const venv = path.join(root, ".withyou-python");
     if (!fs.existsSync(venv)) {
       attempted.push("python -m venv .withyou-python");
-      const created = runInstaller(executableName("python"), ["-m", "venv", ".withyou-python"]);
+      const created = runInstaller(executableName("python"), ["-m", "venv", ".withyou-python"], backend);
       output.push(`Python venv: ${created.output}`);
     }
     const venvPython =
@@ -354,19 +373,16 @@ export function installCodingEnvironment(
       requirementsHash && fs.existsSync(marker) && fs.readFileSync(marker, "utf8").trim() === requirementsHash;
     if (requirementsHash && !alreadyInstalled && fs.existsSync(venvPython)) {
       attempted.push("python -m pip install -r requirements.txt");
-      const installed = runInstaller(venvPython, [
-        "-m",
-        "pip",
-        "install",
-        "--disable-pip-version-check",
-        "-r",
-        "requirements.txt",
-      ]);
+      const installed = runInstaller(
+        venvPython,
+        ["-m", "pip", "install", "--disable-pip-version-check", "-r", "requirements.txt"],
+        backend,
+      );
       output.push(`Python 项目依赖: ${installed.output}`);
       if (installed.ok) fs.writeFileSync(marker, requirementsHash, "utf8");
       else requiresUserAction.push("Python 项目依赖安装失败；Pi 已保留真实输出，可根据错误继续修复。");
     }
   }
 
-  return { status: getCodingEnvironmentStatus(root), attempted, output, requiresUserAction };
+  return { status: getCodingEnvironmentStatus(root, backend), attempted, output, requiresUserAction };
 }
