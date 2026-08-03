@@ -21,6 +21,7 @@ import { appStateDir } from "@/lib/runtime/app-paths";
 import { resolveProjectPackageManager } from "./coding-environment";
 import { createCodingToolDefinitions } from "./coding-tools";
 import { type HarnessRun, type HarnessSessionEntry, type HarnessSnapshot, piHarness } from "./harness/coordinator";
+import { PI_HARNESS_POLICY_VERSION } from "./harness/policy";
 import { createPiModelServices } from "./model";
 import { createProjectApiToolDefinitions } from "./project-tools";
 import type { PiRuntimeEvent } from "./runtime";
@@ -57,7 +58,7 @@ async function loadPiCodingAgent(): Promise<PiCodingAgentModule> {
   return (await load(PI_CODING_AGENT_PACKAGE)) as PiCodingAgentModule;
 }
 
-const SOURCE_RUNTIME_POLICY_VERSION = 11;
+const SOURCE_RUNTIME_POLICY_VERSION = 12;
 
 const SOURCE_SYSTEM_PROMPT = `你是 Pi，一个嵌入 WithYou Novel 的通用 coding Agent，负责维护当前代码工作区。
 
@@ -759,7 +760,7 @@ async function createSourceRuntime(workspaceId: string, novelId: string | null):
   });
   return {
     session,
-    fingerprint: `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}:${novelId ?? "unbound"}:${sourceSkillFingerprint()}`,
+    fingerprint: `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}:harness-${PI_HARNESS_POLICY_VERSION}:${novelId ?? "unbound"}:${sourceSkillFingerprint()}`,
     workspace,
   };
 }
@@ -805,14 +806,17 @@ export async function promptSourcePi(
 ): Promise<Readonly<HarnessRun>> {
   requireSourceAccess();
   const scopeKey = `${workspaceId}:${novelId ?? "unbound"}`;
+  const workspace = requireSourceAccess();
   return piHarness.prompt<AgentSessionEvent>({
     scopeKey,
     message,
+    resourceKeys: [`workspace:${path.resolve(workspace)}`],
     getSession: () => getSourceRuntime(workspaceId, novelId),
+    onRun: (run) => emit({ type: "run_started", runId: run.id }),
     onEvent: (event, run) =>
       forwardEvent(event, (output) => {
-        const correlated = { ...output, runId: run.id };
-        piHarness.recordEvent(scopeKey, run.id, correlated);
+        const sequence = piHarness.recordEvent(scopeKey, run.id, { ...output, runId: run.id });
+        const correlated = { ...output, runId: run.id, sequence };
         emit(correlated);
       }),
   });

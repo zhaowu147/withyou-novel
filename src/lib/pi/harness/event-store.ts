@@ -118,10 +118,14 @@ export class PiHarnessEventStore {
     const filePath = statePath(scopeKey);
     await withStateLock(filePath, () => {
       const state = readState(scopeKey, filePath);
-      let sequence = state.events.at(-1)?.sequence ?? 0;
+      const sequences = new Map<string, number>();
+      for (const input of inputs) {
+        if (sequences.has(input.runId)) continue;
+        sequences.set(input.runId, state.events.filter((event) => event.runId === input.runId).at(-1)?.sequence ?? 0);
+      }
       state.events.push(
         ...inputs.map((input) => ({
-          sequence: ++sequence,
+          sequence: sequences.set(input.runId, (sequences.get(input.runId) ?? 0) + 1).get(input.runId) ?? 1,
           runId: input.runId,
           occurredAt: input.occurredAt ?? new Date().toISOString(),
           event: input.event,

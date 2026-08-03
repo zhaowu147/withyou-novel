@@ -47,6 +47,30 @@ interface PiToolActivity {
   status: "running" | "done" | "error";
 }
 
+interface PiStreamEvent {
+  type: string;
+  runId?: string;
+  sequence?: number;
+  text?: string;
+  toolCallId?: string;
+  toolName?: string;
+  isError?: boolean;
+}
+
+interface PiReplayRecord {
+  sequence: number;
+  event: PiStreamEvent;
+}
+
+type PiRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+interface PiReplayResponse {
+  success: boolean;
+  run?: { id: string; status: PiRunStatus; error?: string };
+  events?: PiReplayRecord[];
+  error?: string;
+}
+
 interface DockPosition {
   x: number;
   y: number;
@@ -64,6 +88,25 @@ interface DockDragState {
 const PI_DOCK_POSITION_KEY = "withyou_pi_dock_position";
 const PI_WORKSPACE_STATE_KEY = "withyou_pi_workspace_states_v2";
 const DOCK_VIEWPORT_MARGIN = 8;
+const PI_RECONNECT_MAX_ATTEMPTS = 30;
+const PI_RECONNECT_INITIAL_DELAY = 300;
+const PI_RECONNECT_MAX_DELAY = 4_000;
+
+function waitForReconnect(delay: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new DOMException("请求已取消", "AbortError"));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(new DOMException("请求已取消", "AbortError"));
+    };
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delay);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 function currentWorkspace(): { workspaceId: string | null; novelId: string | null } {
   const conversationId = getActiveConversationId();
@@ -158,6 +201,8 @@ export function PiDock() {
   const snapshotRef = useRef<PiWorkspaceState>({ input: "", messages: [], activities: [] });
   const requestGenerationRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
+  const activeRunIdRef = useRef<string | null>(null);
+  const lastSequenceRef = useRef(0);
   const conversationRef = useRef<HTMLDivElement | null>(null);
 
   const clampDockPosition = useCallback((position: DockPosition): DockPosition => {
@@ -274,6 +319,8 @@ export function PiDock() {
       requestAbortRef.current?.abort();
       requestAbortRef.current = null;
       assistantIdRef.current = null;
+      activeRunIdRef.current = null;
+      lastSequenceRef.current = 0;
       setRunning(false);
       switchPiScope(next.workspaceId);
     }
@@ -289,13 +336,10 @@ export function PiDock() {
     };
   }, [refreshNovel]);
 
-  const sourceFetch = useCallback(
-    (input: RequestInfo | URL, init: RequestInit = {}) => {
-      const headers = new Headers(init.headers);
-      return workspaceFetch(input, { ...init, headers });
-    },
-    [],
-  );
+  const sourceFetch = useCallback((input: RequestInfo | URL, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers);
+    return workspaceFetch(input, { ...init, headers });
+  }, []);
 
   const loadSourceStatus = useCallback(async () => {
     const response = await sourceFetch("/api/pi/source/permissions");
@@ -341,6 +385,74 @@ export function PiDock() {
     );
   }, []);
 
+  const applyPiEvent = useCallback(
+    (event: PiStreamEvent, generation: number, sequenceOverride?: number) => {
+      if (requestGenerationRef.current !== generation) return;
+      if (event.runId) activeRunIdRef.current = event.runId;
+      const sequence = sequenceOverride ?? event.sequence;
+      if (typeof sequence === "number" && Number.isFinite(sequence)) {
+        if (sequence <= lastSequenceRef.current) return;
+        lastSequenceRef.current = sequence;
+      }
+      if (event.type === "text" && event.text) appendAssistant(event.text, generation);
+      if (event.type === "tool_start" && event.toolCallId && event.toolName) {
+        const toolCallId = event.toolCallId;
+        const toolName = event.toolName;
+        setActivities((current) => [...current, { id: toolCallId, name: toolName, status: "running" }]);
+      }
+      if (event.type === "tool_end" && event.toolCallId) {
+        setActivities((current) =>
+          current.map((activity) =>
+            activity.id === event.toolCallId ? { ...activity, status: event.isError ? "error" : "done" } : activity,
+          ),
+        );
+      }
+      if (event.type === "error") throw new Error(event.text ?? "Pi 运行失败");
+    },
+    [appendAssistant],
+  );
+
+  const recoverPiRun = useCallback(
+    async (generation: number, controller: AbortController): Promise<{ status: PiRunStatus; error?: string }> => {
+      const runId = activeRunIdRef.current;
+      if (!runId) throw new Error("Pi 未返回运行标识，无法恢复连接");
+      let delay = PI_RECONNECT_INITIAL_DELAY;
+      for (let attempt = 0; attempt < PI_RECONNECT_MAX_ATTEMPTS; attempt += 1) {
+        if (requestGenerationRef.current !== generation || controller.signal.aborted) {
+          throw new DOMException("请求已取消", "AbortError");
+        }
+        if (attempt > 0) await waitForReconnect(delay, controller.signal);
+        const response = await sourceFetch(
+          `/api/pi?runId=${encodeURIComponent(runId)}&after=${lastSequenceRef.current}`,
+          { signal: controller.signal },
+        );
+        if (response.status === 404) {
+          delay = Math.min(Math.round(delay * 1.7), PI_RECONNECT_MAX_DELAY);
+          continue;
+        }
+        if (!response.ok) throw new Error(await readableApiError(response, "Pi 连接恢复失败"));
+        const payload = (await response.json()) as PiReplayResponse;
+        if (!payload.success || !payload.run) {
+          throw new Error(payload.error ?? "Pi 运行记录不可用");
+        }
+        activeRunIdRef.current = payload.run.id;
+        for (const record of payload.events ?? []) {
+          if (record?.event) applyPiEvent(record.event, generation, record.sequence);
+        }
+        if (
+          payload.run.status === "completed" ||
+          payload.run.status === "failed" ||
+          payload.run.status === "cancelled"
+        ) {
+          return { status: payload.run.status, error: payload.run.error };
+        }
+        delay = Math.min(Math.round(delay * 1.7), PI_RECONNECT_MAX_DELAY);
+      }
+      throw new Error("Pi 连接恢复超时，任务仍可能在后台继续运行");
+    },
+    [applyPiEvent, sourceFetch],
+  );
+
   const sendPrompt = useCallback(async () => {
     const message = input.trim();
     if (!message || running) return;
@@ -359,72 +471,101 @@ export function PiDock() {
     const controller = new AbortController();
     requestAbortRef.current?.abort();
     requestAbortRef.current = controller;
+    activeRunIdRef.current = null;
+    lastSequenceRef.current = 0;
 
+    let streamError: unknown = null;
+    let recovery: { status: PiRunStatus; error?: string } | null = null;
+    let recoveryAttempted = false;
     try {
-      const response = await sourceFetch("/api/pi", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
-        signal: controller.signal,
-      });
-      if (!response.ok || !response.body) {
-        throw new Error(await readableApiError(response, "无法启动 Pi"));
-      }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? "";
-        for (const frame of frames) {
-          const dataLine = frame.split("\n").find((line) => line.startsWith("data: "));
-          if (!dataLine) continue;
-          const event = JSON.parse(dataLine.slice(6)) as {
-            type: string;
-            text?: string;
-            toolCallId?: string;
-            toolName?: string;
-            isError?: boolean;
-          };
-          if (requestGenerationRef.current !== generation) return;
-          if (event.type === "text" && event.text) appendAssistant(event.text, generation);
-          if (event.type === "tool_start" && event.toolCallId && event.toolName) {
-            const toolCallId = event.toolCallId;
-            const toolName = event.toolName;
-            setActivities((current) => [...current, { id: toolCallId, name: toolName, status: "running" }]);
-          }
-          if (event.type === "tool_end" && event.toolCallId) {
-            setActivities((current) =>
-              current.map((activity) =>
-                activity.id === event.toolCallId ? { ...activity, status: event.isError ? "error" : "done" } : activity,
-              ),
-            );
-          }
-          if (event.type === "error") throw new Error(event.text ?? "Pi 运行失败");
+      try {
+        const response = await sourceFetch("/api/pi", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message }),
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) {
+          throw new Error(await readableApiError(response, "无法启动 Pi"));
         }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split("\n\n");
+          buffer = frames.pop() ?? "";
+          for (const frame of frames) {
+            const dataLine = frame.split("\n").find((line) => line.startsWith("data: "));
+            if (!dataLine) continue;
+            const event = JSON.parse(dataLine.slice(6)) as PiStreamEvent;
+            if (requestGenerationRef.current !== generation) return;
+            applyPiEvent(event, generation);
+          }
+        }
+      } catch (error) {
+        streamError = error;
       }
-      await loadProposals();
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        appendAssistant(`\n\n运行失败：${error instanceof Error ? error.message : "未知错误"}`, generation);
+
+      if (
+        !controller.signal.aborted &&
+        requestGenerationRef.current === generation &&
+        activeRunIdRef.current &&
+        !streamError
+      ) {
+        try {
+          recoveryAttempted = true;
+          recovery = await recoverPiRun(generation, controller);
+        } catch (error) {
+          streamError = streamError ?? error;
+        }
+      } else if (!controller.signal.aborted && !streamError) {
+        streamError = new Error("Pi 未返回可恢复的运行记录");
+      }
+
+      if (!controller.signal.aborted && requestGenerationRef.current === generation) {
+        if (streamError && activeRunIdRef.current && !recoveryAttempted) {
+          try {
+            recoveryAttempted = true;
+            recovery = await recoverPiRun(generation, controller);
+            streamError = null;
+          } catch (error) {
+            streamError = error;
+          }
+        }
+        if (recovery?.status === "failed") {
+          streamError = new Error(recovery.error ?? "Pi 运行失败");
+        } else if (recovery?.status === "cancelled") {
+          return;
+        } else if (streamError) {
+          appendAssistant(
+            `\n\n运行失败：${streamError instanceof Error ? streamError.message : "未知错误"}`,
+            generation,
+          );
+        } else {
+          await loadProposals();
+        }
       }
     } finally {
       if (requestGenerationRef.current === generation) {
         assistantIdRef.current = null;
         requestAbortRef.current = null;
+        activeRunIdRef.current = null;
+        lastSequenceRef.current = 0;
         setRunning(false);
       }
     }
-  }, [appendAssistant, input, loadProposals, running, sourceFetch]);
+  }, [appendAssistant, applyPiEvent, input, loadProposals, recoverPiRun, running, sourceFetch]);
 
   const stop = useCallback(async () => {
     requestGenerationRef.current += 1;
     requestAbortRef.current?.abort();
     requestAbortRef.current = null;
     assistantIdRef.current = null;
+    activeRunIdRef.current = null;
+    lastSequenceRef.current = 0;
     await sourceFetch("/api/pi", { method: "DELETE" });
     setRunning(false);
   }, [sourceFetch]);
@@ -519,7 +660,8 @@ export function PiDock() {
                     Pi 可以直接处理当前工作区的任务
                   </div>
                   <p className="mt-2 text-muted-foreground text-xs leading-5">
-                    Pi 会先读取并理解当前工作区，再执行所需步骤。缺少环境或依赖时会尝试准备；它也可处理任意领域的 GitHub 仓库、代码与 Skill。代码修改会自动保留检查点，可随时回滚。
+                    Pi 会先读取并理解当前工作区，再执行所需步骤。缺少环境或依赖时会尝试准备；它也可处理任意领域的 GitHub
+                    仓库、代码与 Skill。代码修改会自动保留检查点，可随时回滚。
                   </p>
                 </div>
               )}
@@ -673,9 +815,7 @@ export function PiDock() {
                   }}
                   disabled={running}
                   rows={2}
-                  placeholder={
-                    "交给 Pi 一个任务…"
-                  }
+                  placeholder={"交给 Pi 一个任务…"}
                   className="min-h-12 flex-1 resize-none bg-transparent px-2 py-1 text-sm outline-none"
                 />
                 {running ? (

@@ -1,6 +1,7 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
 import { type HarnessEventInput, type HarnessSnapshot, PiHarnessEventStore } from "./event-store";
+import { normalizeHarnessPrompt, PiHarnessResourceScheduler } from "./policy";
 import { randomUUID } from "node:crypto";
 
 export type { HarnessSnapshot } from "./event-store";
@@ -31,20 +32,22 @@ export interface HarnessEventRecord {
 
 interface PiHarnessCoordinatorOptions {
   journal?: PiHarnessEventStore;
+  scheduler?: PiHarnessResourceScheduler;
 }
 
 type HarnessAgentEventHandler<TEvent> = (event: TEvent, run: Readonly<HarnessRun>) => void;
+type HarnessRunHandler = (run: Readonly<HarnessRun>) => void;
 
 /**
  * Owns process-local Pi sessions and the lifecycle of one prompt execution.
  *
- * Persistence of the Pi transcript remains delegated to SessionManager. This
- * The event journal is deliberately bounded and local. The Pi transcript itself
- * remains delegated to SessionManager, while this layer keeps enough correlated
- * output to recover a dropped SSE connection.
+ * Persistence of the Pi transcript remains delegated to SessionManager. The
+ * event journal is deliberately bounded and local, while this layer keeps enough
+ * correlated output to recover a dropped SSE connection.
  */
 export class PiHarnessCoordinator {
   private readonly journal?: PiHarnessEventStore;
+  private readonly scheduler: PiHarnessResourceScheduler;
   private readonly sessions = new Map<string, Promise<HarnessSessionEntry>>();
   private readonly activeSessions = new Map<string, Promise<HarnessSessionEntry>>();
   private readonly runs = new Map<string, HarnessRun>();
@@ -56,6 +59,7 @@ export class PiHarnessCoordinator {
 
   constructor(options: PiHarnessCoordinatorOptions = {}) {
     this.journal = options.journal;
+    this.scheduler = options.scheduler ?? new PiHarnessResourceScheduler();
   }
 
   async getOrCreateSession<TEntry extends HarnessSessionEntry>(
@@ -90,41 +94,48 @@ export class PiHarnessCoordinator {
   async prompt<TEvent>(input: {
     scopeKey: string;
     message: string;
+    resourceKeys?: string[];
     getSession: () => Promise<HarnessSessionEntry>;
     onEvent: HarnessAgentEventHandler<TEvent>;
+    onRun?: HarnessRunHandler;
   }): Promise<Readonly<HarnessRun>> {
-    if (this.activeRuns.has(input.scopeKey)) throw new Error("Pi 正在处理上一项任务");
+    const request = normalizeHarnessPrompt(input);
+    if (this.activeRuns.has(request.scopeKey)) throw new Error("Pi 正在处理上一项任务");
 
     const run: HarnessRun = {
       id: randomUUID(),
-      scopeKey: input.scopeKey,
-      message: input.message,
+      scopeKey: request.scopeKey,
+      message: request.message,
       status: "queued",
       startedAt: new Date().toISOString(),
     };
     this.runs.set(run.id, run);
-    this.activeRuns.set(input.scopeKey, run.id);
-    this.queueRunSave(input.scopeKey, run);
+    this.activeRuns.set(request.scopeKey, run.id);
+    this.queueRunSave(request.scopeKey, run);
+    let releaseResources: () => void = () => undefined;
 
     try {
+      input.onRun?.(run);
+      releaseResources = await this.scheduler.acquire(request.resourceKeys);
+      if (run.status === "cancelled") return run;
       const sessionPromise = Promise.resolve().then(input.getSession);
-      this.activeSessions.set(input.scopeKey, sessionPromise);
+      this.activeSessions.set(request.scopeKey, sessionPromise);
       const entry = await sessionPromise;
       if (entry.session.isStreaming) throw new Error("Pi 正在处理上一项任务");
       run.status = "running";
-      this.queueRunSave(input.scopeKey, run);
+      this.queueRunSave(request.scopeKey, run);
 
       const unsubscribe = entry.session.subscribe((event) => input.onEvent(event as TEvent, run));
       try {
-        await entry.session.prompt(input.message);
+        await entry.session.prompt(request.message);
         if ((run.status as HarnessRunStatus) !== "cancelled") run.status = "completed";
-        this.queueRunSave(input.scopeKey, run);
+        this.queueRunSave(request.scopeKey, run);
       } catch (error) {
         if ((run.status as HarnessRunStatus) !== "cancelled") {
           run.status = "failed";
           run.error = error instanceof Error ? error.message : String(error);
         }
-        this.queueRunSave(input.scopeKey, run);
+        this.queueRunSave(request.scopeKey, run);
         throw error;
       } finally {
         unsubscribe();
@@ -135,28 +146,30 @@ export class PiHarnessCoordinator {
         run.status = "failed";
         run.error = error instanceof Error ? error.message : String(error);
       }
-      this.queueRunSave(input.scopeKey, run);
+      this.queueRunSave(request.scopeKey, run);
       throw error;
     } finally {
       run.finishedAt = new Date().toISOString();
-      this.queueRunSave(input.scopeKey, run);
-      if (this.activeRuns.get(input.scopeKey) === run.id) this.activeRuns.delete(input.scopeKey);
-      if (this.activeSessions.get(input.scopeKey)) this.activeSessions.delete(input.scopeKey);
-      await this.flush(input.scopeKey);
+      this.queueRunSave(request.scopeKey, run);
+      if (this.activeRuns.get(request.scopeKey) === run.id) this.activeRuns.delete(request.scopeKey);
+      if (this.activeSessions.get(request.scopeKey)) this.activeSessions.delete(request.scopeKey);
+      releaseResources();
+      await this.flush(request.scopeKey);
       this.pruneRuns();
     }
   }
 
   async abort(scopeKey: string): Promise<boolean> {
     const runId = this.activeRuns.get(scopeKey);
-    const pending = this.activeSessions.get(scopeKey) ?? this.sessions.get(scopeKey);
-    if (!runId || !pending) return false;
+    if (!runId) return false;
 
     const run = this.runs.get(runId);
     if (run && (run.status === "queued" || run.status === "running")) {
       run.status = "cancelled";
       this.queueRunSave(scopeKey, run);
     }
+    const pending = this.activeSessions.get(scopeKey) ?? this.sessions.get(scopeKey);
+    if (!pending) return true;
     const entry = await pending;
     await entry.session.abort();
     return true;
@@ -178,17 +191,17 @@ export class PiHarnessCoordinator {
     return runId ? this.getRun(runId) : undefined;
   }
 
-  recordEvent(scopeKey: string, runId: string, event: unknown): void {
+  recordEvent(scopeKey: string, runId: string, event: unknown): number {
     const current = this.events.get(scopeKey) ?? [];
     const next: HarnessEventRecord = {
-      sequence: (current.at(-1)?.sequence ?? 0) + 1,
+      sequence: (current.filter((event) => event.runId === runId).at(-1)?.sequence ?? 0) + 1,
       runId,
       occurredAt: new Date().toISOString(),
       event,
     };
     current.push(next);
     this.events.set(scopeKey, current.slice(-2_000));
-    if (!this.journal) return;
+    if (!this.journal) return next.sequence;
 
     const pending = this.pendingEvents.get(scopeKey) ?? [];
     pending.push({ runId, event, occurredAt: next.occurredAt });
@@ -202,6 +215,7 @@ export class PiHarnessCoordinator {
       }, 100);
       this.eventTimers.set(scopeKey, timer);
     }
+    return next.sequence;
   }
 
   async readSnapshot(scopeKey: string, runId: string, afterSequence = 0): Promise<HarnessSnapshot> {

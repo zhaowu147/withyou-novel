@@ -2,6 +2,7 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
 import { PiHarnessCoordinator } from "../src/lib/pi/harness/coordinator";
 import { PiHarnessEventStore } from "../src/lib/pi/harness/event-store";
+import { normalizeHarnessPrompt, PiHarnessResourceScheduler } from "../src/lib/pi/harness/policy";
 import { resetDataRootCache } from "../src/lib/runtime/app-paths";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -153,4 +154,32 @@ test("harness journal reopens a scoped run and replays events", async () => {
     resetDataRootCache();
     fs.rmSync(tempDataDir, { recursive: true, force: true });
   }
+});
+
+test("harness policy normalizes scope and queues shared workspace resources", async () => {
+  const normalized = normalizeHarnessPrompt({
+    scopeKey: " scope ",
+    message: " 检查项目 ",
+    resourceKeys: ["workspace:repo", "workspace:repo"],
+  });
+  assert.deepEqual(normalized, {
+    scopeKey: "scope",
+    message: "检查项目",
+    resourceKeys: ["scope", "workspace:repo"],
+  });
+
+  const scheduler = new PiHarnessResourceScheduler();
+  const releaseFirst = await scheduler.acquire(["workspace:repo"]);
+  let secondStarted = false;
+  const second = scheduler.acquire(["workspace:repo"]).then((release) => {
+    secondStarted = true;
+    return release;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(secondStarted, false);
+  releaseFirst();
+  const releaseSecond = await second;
+  assert.equal(secondStarted, true);
+  releaseSecond();
+  assert.equal(scheduler.getPendingResourceCount(), 0);
 });

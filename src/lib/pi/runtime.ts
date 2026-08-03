@@ -9,6 +9,7 @@ import { novelFS } from "@/lib/novel-fs";
 import { appStateDir } from "@/lib/runtime/app-paths";
 
 import { type HarnessRun, type HarnessSnapshot, piHarness } from "./harness/coordinator";
+import { PI_HARNESS_POLICY_VERSION } from "./harness/policy";
 import { createPiModelServices } from "./model";
 import { createPiProposal } from "./proposal-store";
 import type { PiAccessLevel } from "./source-permissions";
@@ -17,8 +18,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 export interface PiRuntimeEvent {
-  type: "text" | "thinking" | "tool_start" | "tool_end" | "done" | "error";
+  type: "run_started" | "text" | "thinking" | "tool_start" | "tool_end" | "done" | "error";
   runId?: string;
+  sequence?: number;
   text?: string;
   toolCallId?: string;
   toolName?: string;
@@ -301,7 +303,7 @@ async function getRuntime(
   const cwd = isWorkspaceDraft
     ? path.join(appStateDir(), "pi-draft-workspaces", workspaceId, accessLevel)
     : projectDir(safeNovelId);
-  const scopedFingerprint = `${fingerprint}:${accessLevel}:policy-${PI_RUNTIME_POLICY_VERSION}:${projectSkillFingerprint(cwd, isWorkspaceDraft)}`;
+  const scopedFingerprint = `${fingerprint}:${accessLevel}:policy-${PI_RUNTIME_POLICY_VERSION}:harness-${PI_HARNESS_POLICY_VERSION}:${projectSkillFingerprint(cwd, isWorkspaceDraft)}`;
   return piHarness.getOrCreateSession(key, scopedFingerprint, () =>
     createRuntime(workspaceId, safeNovelId, accessLevel),
   );
@@ -344,14 +346,20 @@ export async function promptPi(
 ): Promise<Readonly<HarnessRun>> {
   const safeNovelId = sanitizeNovelId(novelId);
   const scopeKey = `${workspaceId}:${safeNovelId}:${accessLevel}`;
+  const isWorkspaceDraft = safeNovelId.startsWith(PI_WORKSPACE_DRAFT_PREFIX);
+  const cwd = isWorkspaceDraft
+    ? path.join(appStateDir(), "pi-draft-workspaces", workspaceId, accessLevel)
+    : projectDir(safeNovelId);
   return piHarness.prompt<AgentSessionEvent>({
     scopeKey,
     message,
+    resourceKeys: [`workspace:${path.resolve(cwd)}`],
     getSession: () => getRuntime(workspaceId, safeNovelId, accessLevel),
+    onRun: (run) => emit({ type: "run_started", runId: run.id }),
     onEvent: (event, run) =>
       forwardEvent(event, (output) => {
-        const correlated = { ...output, runId: run.id };
-        piHarness.recordEvent(scopeKey, run.id, correlated);
+        const sequence = piHarness.recordEvent(scopeKey, run.id, { ...output, runId: run.id });
+        const correlated = { ...output, runId: run.id, sequence };
         emit(correlated);
       }),
   });
