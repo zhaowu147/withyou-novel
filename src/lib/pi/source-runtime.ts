@@ -1,6 +1,6 @@
 import "server-only";
 
-import type { AgentSession, AgentSessionEvent, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type { PromptPackageScope, ToolId } from "@/lib/prompts/prompt-package";
@@ -20,6 +20,7 @@ import { appStateDir } from "@/lib/runtime/app-paths";
 
 import { resolveProjectPackageManager } from "./coding-environment";
 import { createCodingToolDefinitions } from "./coding-tools";
+import { type HarnessRun, type HarnessSessionEntry, piHarness } from "./harness/coordinator";
 import { createPiModelServices } from "./model";
 import { createProjectApiToolDefinitions } from "./project-tools";
 import type { PiRuntimeEvent } from "./runtime";
@@ -47,23 +48,14 @@ import * as path from "node:path";
 type PiCodingAgentModule = typeof import("@earendil-works/pi-coding-agent");
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 
+interface SourceRuntimeEntry extends HarnessSessionEntry {
+  workspace: string;
+}
+
 async function loadPiCodingAgent(): Promise<PiCodingAgentModule> {
   const load = new Function("name", "return import(name)") as (name: string) => Promise<unknown>;
   return (await load(PI_CODING_AGENT_PACKAGE)) as PiCodingAgentModule;
 }
-
-interface SourceRuntimeEntry {
-  session: AgentSession;
-  fingerprint: string;
-  workspace: string;
-}
-
-const globalForSourcePi = globalThis as typeof globalThis & {
-  __withyouPiSourceSessions?: Map<string, Promise<SourceRuntimeEntry>>;
-};
-
-const sourceSessions = globalForSourcePi.__withyouPiSourceSessions ?? new Map<string, Promise<SourceRuntimeEntry>>();
-globalForSourcePi.__withyouPiSourceSessions = sourceSessions;
 
 const SOURCE_RUNTIME_POLICY_VERSION = 11;
 
@@ -773,25 +765,11 @@ async function createSourceRuntime(workspaceId: string, novelId: string | null):
 }
 
 async function getSourceRuntime(workspaceId: string, novelId: string | null): Promise<SourceRuntimeEntry> {
-  const workspace = requireSourceAccess();
+  requireSourceAccess();
   const { fingerprint } = await createPiModelServices();
   const policyFingerprint = `${fingerprint}:source-policy-${SOURCE_RUNTIME_POLICY_VERSION}:${novelId ?? "unbound"}:${sourceSkillFingerprint()}`;
   const key = `${workspaceId}:${novelId ?? "unbound"}`;
-  const existing = sourceSessions.get(key);
-  if (existing) {
-    const entry = await existing;
-    if (entry.workspace === workspace && entry.fingerprint === policyFingerprint) return entry;
-    entry.session.dispose();
-    sourceSessions.delete(key);
-  }
-  const pending = createSourceRuntime(workspaceId, novelId);
-  sourceSessions.set(key, pending);
-  try {
-    return await pending;
-  } catch (error) {
-    sourceSessions.delete(key);
-    throw error;
-  }
+  return piHarness.getOrCreateSession(key, policyFingerprint, () => createSourceRuntime(workspaceId, novelId));
 }
 
 function forwardEvent(event: AgentSessionEvent, emit: (event: PiRuntimeEvent) => void): void {
@@ -824,21 +802,17 @@ export async function promptSourcePi(
   novelId: string | null,
   message: string,
   emit: (event: PiRuntimeEvent) => void,
-): Promise<void> {
+): Promise<Readonly<HarnessRun>> {
   requireSourceAccess();
-  const { session } = await getSourceRuntime(workspaceId, novelId);
-  if (session.isStreaming) throw new Error("源码 Pi 正在处理上一项任务");
-  const unsubscribe = session.subscribe((event) => forwardEvent(event, emit));
-  try {
-    await session.prompt(message);
-  } finally {
-    unsubscribe();
-  }
+  const scopeKey = `${workspaceId}:${novelId ?? "unbound"}`;
+  return piHarness.prompt<AgentSessionEvent>({
+    scopeKey,
+    message,
+    getSession: () => getSourceRuntime(workspaceId, novelId),
+    onEvent: (event, run) => forwardEvent(event, (output) => emit({ ...output, runId: run.id })),
+  });
 }
 
 export async function abortSourcePi(workspaceId: string, novelId: string | null): Promise<void> {
-  const existing = sourceSessions.get(`${workspaceId}:${novelId ?? "unbound"}`);
-  if (!existing) return;
-  const { session } = await existing;
-  await session.abort();
+  await piHarness.abort(`${workspaceId}:${novelId ?? "unbound"}`);
 }

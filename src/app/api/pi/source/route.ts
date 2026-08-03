@@ -29,7 +29,7 @@ export async function POST(request: Request): Promise<Response> {
         if (!closed) controller.enqueue(encodeEvent(event));
       };
       void promptSourcePi(auth.workspaceId, auth.novelId, message, send)
-        .then(() => send({ type: "done" }))
+        .then((run) => send({ type: "done", runId: run.id }))
         .catch((error: unknown) => {
           send({ type: "error", text: error instanceof Error ? error.message : "源码 Pi 运行失败" });
         })

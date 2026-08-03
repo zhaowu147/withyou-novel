@@ -1,0 +1,54 @@
+id: CHG-2026-021
+title: Extract a durable-ready Pi harness coordinator
+status: completed
+created_at: 2026-08-03
+purpose: >-
+  Introduce the first harness boundary around the existing Pi AgentSession so
+  session reuse, run state, cancellation, and event correlation have one
+  owner without changing the current tool policy or Git behavior.
+baseline:
+  source: current disk state
+  evidence:
+    - src/lib/pi/source-runtime.ts
+    - src/lib/pi/runtime.ts
+    - src/app/api/pi/route.ts
+    - src/app/api/pi/source/route.ts
+scope:
+  included:
+    - Extract process-local session reuse and fingerprint replacement into a coordinator.
+    - Add in-memory run state and run IDs for event correlation.
+    - Preserve the existing SSE event names and cancellation semantics.
+    - Keep Git operations unlocked as explicitly requested.
+  excluded:
+    - Durable run event storage and SSE replay.
+    - Centralized approval policy and resource locking.
+    - Sandbox/worker execution changes.
+    - Pi model, prompt, or tool behavior changes.
+expected_files:
+  - src/lib/pi/harness/coordinator.ts
+  - src/lib/pi/runtime.ts
+  - src/lib/pi/source-runtime.ts
+  - src/app/api/pi/route.ts
+  - src/app/api/pi/source/route.ts
+  - tests/pi-harness.test.ts
+validation:
+  - Harness unit tests
+  - TypeScript noEmit
+  - Production build
+completed_at: 2026-08-03
+actual_files:
+  - src/lib/pi/harness/coordinator.ts
+  - src/lib/pi/runtime.ts
+  - src/lib/pi/source-runtime.ts
+  - src/app/api/pi/route.ts
+  - src/app/api/pi/source/route.ts
+  - tests/pi-harness.test.ts
+validation_results:
+  - Pi harness unit tests: 3 passed, 0 failed
+  - Biome check: passed
+  - TypeScript noEmit: passed
+  - Next.js production build: passed
+decisions:
+  - Git operations remain unlocked; no Git lock was added.
+  - Durable event replay, centralized policy, resource locks, and sandbox execution remain later phases.
+revision: 2

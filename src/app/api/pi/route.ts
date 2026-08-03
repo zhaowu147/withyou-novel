@@ -1,6 +1,6 @@
-import { promptSourcePi, abortSourcePi } from "@/lib/pi/source-runtime";
 import type { PiRuntimeEvent } from "@/lib/pi/runtime";
 import { authorizeSourceRequest, sourceRequestErrorResponse } from "@/lib/pi/source-request-auth";
+import { abortSourcePi, promptSourcePi } from "@/lib/pi/source-runtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,8 +28,10 @@ export async function POST(request: Request): Promise<Response> {
         if (!closed) controller.enqueue(encodeEvent(event));
       };
       void promptSourcePi(auth.workspaceId, auth.novelId, message, send)
-        .then(() => send({ type: "done" }))
-        .catch((error: unknown) => send({ type: "error", text: error instanceof Error ? error.message : "Pi 运行失败" }))
+        .then((run) => send({ type: "done", runId: run.id }))
+        .catch((error: unknown) =>
+          send({ type: "error", text: error instanceof Error ? error.message : "Pi 运行失败" }),
+        )
         .finally(() => {
           closed = true;
           controller.close();
