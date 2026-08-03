@@ -16,6 +16,34 @@ export interface NormalizedHarnessPrompt {
   resourceKeys: string[];
 }
 
+export function createHarnessAbortError(): Error {
+  const error = new Error("Pi 资源等待已取消");
+  error.name = "AbortError";
+  return error;
+}
+
+export function waitForHarnessAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(createHarnessAbortError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(createHarnessAbortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 export function normalizeHarnessPrompt(input: HarnessPromptRequest): NormalizedHarnessPrompt {
   const scopeKey = input.scopeKey.trim();
   if (!scopeKey || scopeKey.length > MAX_SCOPE_KEY || /[\r\n]/.test(scopeKey)) {
@@ -47,7 +75,7 @@ interface ResourceClaim {
 export class PiHarnessResourceScheduler {
   private readonly tails = new Map<string, ResourceClaim>();
 
-  async acquire(resourceKeys: string[]): Promise<() => void> {
+  async acquire(resourceKeys: string[], signal?: AbortSignal): Promise<() => void> {
     const keys = [...new Set(resourceKeys)].sort();
     if (keys.length === 0) return () => undefined;
 
@@ -64,7 +92,7 @@ export class PiHarnessResourceScheduler {
     });
 
     try {
-      await Promise.all(claims.map(({ previous }) => previous));
+      await waitForHarnessAbort(Promise.all(claims.map(({ previous }) => previous)), signal);
     } catch (error) {
       for (const { key, claim } of claims) {
         if (this.tails.get(key) === claim) {

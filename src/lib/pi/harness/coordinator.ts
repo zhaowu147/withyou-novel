@@ -2,6 +2,7 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
 import { type HarnessEventInput, type HarnessSnapshot, PiHarnessEventStore } from "./event-store";
 import { normalizeHarnessPrompt, PiHarnessResourceScheduler } from "./policy";
+import { PiHarnessResourceLeaseManager } from "./resource-lease";
 import { randomUUID } from "node:crypto";
 
 export type { HarnessSnapshot } from "./event-store";
@@ -33,6 +34,7 @@ export interface HarnessEventRecord {
 interface PiHarnessCoordinatorOptions {
   journal?: PiHarnessEventStore;
   scheduler?: PiHarnessResourceScheduler;
+  leaseManager?: PiHarnessResourceLeaseManager;
 }
 
 type HarnessAgentEventHandler<TEvent> = (event: TEvent, run: Readonly<HarnessRun>) => void;
@@ -48,6 +50,7 @@ type HarnessRunHandler = (run: Readonly<HarnessRun>) => void;
 export class PiHarnessCoordinator {
   private readonly journal?: PiHarnessEventStore;
   private readonly scheduler: PiHarnessResourceScheduler;
+  private readonly leaseManager: PiHarnessResourceLeaseManager;
   private readonly sessions = new Map<string, Promise<HarnessSessionEntry>>();
   private readonly activeSessions = new Map<string, Promise<HarnessSessionEntry>>();
   private readonly runs = new Map<string, HarnessRun>();
@@ -56,10 +59,12 @@ export class PiHarnessCoordinator {
   private readonly pendingEvents = new Map<string, HarnessEventInput[]>();
   private readonly pendingWrites = new Map<string, Promise<void>>();
   private readonly eventTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly runAborts = new Map<string, AbortController>();
 
   constructor(options: PiHarnessCoordinatorOptions = {}) {
     this.journal = options.journal;
     this.scheduler = options.scheduler ?? new PiHarnessResourceScheduler();
+    this.leaseManager = options.leaseManager ?? new PiHarnessResourceLeaseManager();
   }
 
   async getOrCreateSession<TEntry extends HarnessSessionEntry>(
@@ -111,12 +116,16 @@ export class PiHarnessCoordinator {
     };
     this.runs.set(run.id, run);
     this.activeRuns.set(request.scopeKey, run.id);
+    const abortController = new AbortController();
+    this.runAborts.set(run.id, abortController);
     this.queueRunSave(request.scopeKey, run);
     let releaseResources: () => void = () => undefined;
+    let releaseLease: () => Promise<void> = async () => undefined;
 
     try {
       input.onRun?.(run);
-      releaseResources = await this.scheduler.acquire(request.resourceKeys);
+      releaseResources = await this.scheduler.acquire(request.resourceKeys, abortController.signal);
+      releaseLease = await this.leaseManager.acquire(request.resourceKeys, abortController.signal);
       if (run.status === "cancelled") return run;
       const sessionPromise = Promise.resolve().then(input.getSession);
       this.activeSessions.set(request.scopeKey, sessionPromise);
@@ -153,6 +162,8 @@ export class PiHarnessCoordinator {
       this.queueRunSave(request.scopeKey, run);
       if (this.activeRuns.get(request.scopeKey) === run.id) this.activeRuns.delete(request.scopeKey);
       if (this.activeSessions.get(request.scopeKey)) this.activeSessions.delete(request.scopeKey);
+      this.runAborts.delete(run.id);
+      await releaseLease();
       releaseResources();
       await this.flush(request.scopeKey);
       this.pruneRuns();
@@ -168,6 +179,7 @@ export class PiHarnessCoordinator {
       run.status = "cancelled";
       this.queueRunSave(scopeKey, run);
     }
+    this.runAborts.get(runId)?.abort();
     const pending = this.activeSessions.get(scopeKey) ?? this.sessions.get(scopeKey);
     if (!pending) return true;
     const entry = await pending;

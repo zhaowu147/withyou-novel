@@ -1,0 +1,50 @@
+id: CHG-2026-025
+title: Add Pi cross-process run leases and cancellable waiting
+status: completed
+created_at: 2026-08-03
+purpose: >-
+  Extend the Pi harness beyond process-local scheduling so multiple Next/Electron
+  processes cannot execute the same workspace resource concurrently, while a
+  disconnected or explicitly cancelled queued run can stop waiting promptly.
+baseline:
+  source: current disk state after CHG-2026-024
+  evidence:
+    - src/lib/pi/harness/coordinator.ts
+    - src/lib/pi/harness/policy.ts
+    - src/lib/pi/harness/event-store.ts
+scope:
+  included:
+    - Add hashed, stale-recoverable proper-lockfile leases for normalized Pi resources.
+    - Acquire multiple resources in deterministic order and release them in reverse order.
+    - Thread per-run AbortSignal through local and cross-process resource waiting.
+    - Preserve existing session, event, SSE, tool, model and Git semantics.
+    - Keep Git operations unlocked and do not add a Git-specific mutex.
+  excluded:
+    - Worker-thread or child-process execution of AgentSession.
+    - Cross-machine distributed scheduling or external queues.
+    - Changes to model selection, tool permissions, or business API semantics.
+    - Test/acceptance reruns in this phase, per user instruction.
+expected_files:
+  - src/lib/pi/harness/resource-lease.ts
+  - src/lib/pi/harness/policy.ts
+  - src/lib/pi/harness/coordinator.ts
+  - .project/current.yaml
+validation:
+  - Targeted static formatting only; runtime test and acceptance are deferred by user request.
+revision: 1
+completed_at: 2026-08-03
+actual_files:
+  - src/lib/pi/harness/resource-lease.ts
+  - src/lib/pi/harness/policy.ts
+  - src/lib/pi/harness/coordinator.ts
+validation_results:
+  biome_targeted: passed
+  runtime_tests: deferred_by_user
+  production_build: deferred_by_user
+decisions:
+  - Resource keys are hashed before creating lease files, and multiple keys are acquired in sorted order to avoid deadlocks.
+  - proper-lockfile refreshes active leases and recovers leases left by a crashed process after the stale threshold.
+  - Each run owns an AbortController so queued local or cross-process waits stop when the run is cancelled.
+  - Git remains intentionally unlocked; this phase does not add a Git-specific mutex.
+unresolved:
+  - Worker-thread or child-process AgentSession isolation remains a separate future phase.
