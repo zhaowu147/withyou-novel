@@ -21,7 +21,7 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ success: true, data: { ...unlocked.status, grantToken: unlocked.grantToken } });
   } catch (error) {
     return Response.json(
-      { success: false, error: error instanceof Error ? error.message : "无法解锁源码权限" },
+      { success: false, error: error instanceof Error ? error.message : "coding 工作区不可用" },
       { status: 403 },
     );
   }

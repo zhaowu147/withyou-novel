@@ -16,11 +16,11 @@ const DIALOGUE_CONTRACT = `## 协作修改模式
 - 不解释提示词、模型或内部执行过程。
 - 未收到明确修改要求时，先询问用户希望调整什么。`;
 
-const FIELD_FILL_CONTRACT = `## 单字段填充契约
-1. 当前只为表单中的一个指定字段生成建议，不生成当前功能的完整结果。
+const FULL_FORM_FILL_CONTRACT = `## 一轮式表单填充契约
+1. 当前任务是一次性为整个表单的空字段生成建议，不生成当前功能的完整成品。
 2. 继承当前功能的角色、创作方法、质量标准和用户启用的增强提示词。
 3. 原始提示词中的完整 JSON、Markdown 或文档输出格式在本任务中不适用。
-4. 只输出可直接写入目标字段的自然文本，不输出字段名、JSON、代码围栏、解释或前后缀。
+4. 严格按调用方给出的字段键输出一个 JSON 对象，不输出代码围栏、解释或前后缀。
 5. 只使用当前工具表单和当前小说的隔离上下文，不引用其他会话或其他小说的数据。`;
 
 export interface CompileToolPromptOptions {
@@ -56,7 +56,7 @@ export function compileToolPrompt({
   return parts.filter(Boolean).join("\n\n---\n\n");
 }
 
-export function compileToolFieldPrompt({
+export function compileToolFormFillPrompt({
   toolId,
   basePrompt,
   activatedPrompt,
@@ -75,6 +75,6 @@ export function compileToolFieldPrompt({
     parts.push(`## 当前功能已启用的创作增强\n${enhancement}`);
   }
 
-  parts.push(FIELD_FILL_CONTRACT);
+  parts.push(FULL_FORM_FILL_CONTRACT);
   return parts.filter(Boolean).join("\n\n---\n\n");
 }

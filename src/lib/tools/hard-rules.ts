@@ -10,40 +10,40 @@ export interface HardRuleLayer {
 }
 
 export const HARD_RULES: Record<string, HardRuleLayer> = {
-  inspiration: { gate: "output MUST contain: genre + hook + oneLine (15-30 chars + emotional entry)" },
+  inspiration: { gate: "output should make the genre, hook and one-line premise understandable; wording and length are flexible" },
   protagonist: {
-    gate: "output MUST contain: name + surfacePersona + realPersona(secretIdentity/trauma/motive) + goldenFinger(name + 5-level upgrade path + at least 3 limitRules + consequences + mostDangerousUse + relationalImpact + mostSatisfyingMoment) + growthArc(from X to Y) + fatalWeakness",
+    gate: "output should establish the character's role, active desire, obstacle, resources, cost and a usable contradiction; add hidden history, growth or power details only when the story needs them",
   },
   sidecast: {
-    gate: "at least 3 major NPCs, each with: name, role, relationshipTension, ownGoal(not tool), hiddenTwist",
+    gate: "important supporting characters should have a story function, an independent desire and a relationship tension; count and fields are determined by the requested cast size and story needs",
   },
   world: {
-    gate: "output MUST contain 5 items: coreConflictSource + geography(3+ key locations) + socialStructure(power/class/mobility) + powerSystem(upgrade path + scarcity + costPerLevel + breakpoints) + historicalSecrets(3 past events)",
+    gate: "make the world's conflict source, core rules and consequences clear; expand geography, society, history and power progression only to the level needed to generate the requested story",
   },
   outline: {
-    gate: "STRICT JSON parseable. Must include: novelInfo, narrativeSkeleton, fullStory(causal-sentence), worldBackground, powerSystem, mainCharacter, romanceType, volumes",
+    gate: "preserve the requested output format and provide a coherent cause-and-effect story spine; do not fill unused fields merely to satisfy a template",
   },
   volumes: {
-    gate: "4-6 volumes, each MUST have: name, chapterRange, desireLayer(生存欲/贪欲/色欲/个欲/奢欲), volumeStory(causal-sentence), keyBeats(3+), volumeEndHook",
+    gate: "each volume should have a distinct goal, escalation, turning point and end expectation; volume count, beat count and desire labels should follow the user's story rather than a fixed quota",
   },
   chapterOutlines: {
-    gate: "Per chapter MUST have: number, title(<20 chars), beats(10 points: openHook + middleProgression + endCliffhanger)",
+    gate: "each chapter plan should state the starting situation, chapter task, meaningful change, key beats and ending pull; the number of beats and title length are flexible",
   },
   writing: {
-    gate: "MUST satisfy ALL: 2500-3500 words + dialogue+action ratio >= 0.7 + 1 hook per 300 words + chapterEnd NOT reflection + NO lore dumps + NO author-manipulation",
+    gate: "must preserve established facts and produce readable commercial web fiction; do not mechanically enforce word count, dialogue ratio or hook frequency when the scene requires another rhythm",
   },
   polish: {
-    gate: "3-tier feedback: L1(logic/motive/timelogon breaks), L2(pacing drag/dead dialogue), L3(upgrades/foreshadow/character moments). Fix L1 first.",
+    gate: "preserve story facts and user intent, then prioritize fatal continuity problems, reader drag and high-value upgrades; use tiers as an editing order, not a mandatory output shape",
   },
 };
 
 export const STAGE_GATES: Record<string, string> = {
-  inspiration: "[HARD GATE: 灵感未通过] output 不含 genre+hook+oneLine 任一项,必须重写.",
-  protagonist: "[HARD GATE: 人设未通过] 缺少金手指等级+限制规则+升级路径,必须重写.",
-  sidecast: "[HARD GATE: 配角未通过] 少于 3 个配角或出现工具人,必须重写.",
-  world: "[HARD GATE: 世界观未通过] 5 项中缺失任一项,必须重写.",
-  outline: "[HARD GATE: 全书大纲未通过] JSON parse 失败或关键字段为空,必须重写.",
-  volumes: "[HARD GATE: 分卷未通过] 任意一卷缺少卷名/章节/欲望层/因果句/卷末钩子,重写该卷.",
-  chapterOutlines: "[HARD GATE: 细纲未通过] 任意一章少于 10 个剧情点,重写该章.",
-  writing: "[HARD GATE: 正文未通过] 字数偏离 2500-3500 或 300 字区间无节奏变化,重写.",
+  inspiration: "[编辑检查] 读者能否一眼明白题材、卖点和开局？缺失时补足，不要求固定字数或字段名称。",
+  protagonist: "[编辑检查] 角色是否有主动欲望、现实阻碍和能推动剧情的选择？不要求机械补齐创伤、金手指等级或口头禅。",
+  sidecast: "[编辑检查] 配角是否有自己的利益和行动，而不是只等主角调用？数量服从本次故事需要。",
+  world: "[编辑检查] 设定是否能制造具体冲突，并且规则有代价？只补本次剧情需要的世界信息。",
+  outline: "[编辑检查] 故事因果是否成立、读者期待是否持续？按用户要求输出格式，但不为了填满模板编造内容。",
+  volumes: "[编辑检查] 每卷是否有独立目标、升级和下一卷期待？不强制固定卷数、欲望标签或情节点数量。",
+  chapterOutlines: "[编辑检查] 每章是否知道从哪里开始、要改变什么、结束后读者为什么继续看？不强制十个剧情点。",
+  writing: "[编辑检查] 先检查事实和可读性，再检查商业追读动力；节奏、字数、钩子密度服从场景，不机械重写。",
 };

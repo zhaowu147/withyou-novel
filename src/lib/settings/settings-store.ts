@@ -34,6 +34,10 @@ export interface AppSettings {
   coverGeneration: ModelProviderConfig;
   /** Pi 全局项目 Agent 模型配置 */
   piAgent: ModelProviderConfig;
+  /** 语义对齐策略。语义契约本身不能关闭，只能关闭低风险自动确认。 */
+  semanticAlignment: {
+    autoConfirmLowRisk: boolean;
+  };
   /** 上次修改时间 */
   updatedAt: string;
 }
@@ -115,7 +119,7 @@ export const PROVIDERS = [
 
 /** 默认配置（fallback 到环境变量） */
 export const DEFAULT_SETTINGS: AppSettings = {
-  version: 2,
+  version: 3,
   creationTool: {
     provider: "stepfun",
     model: "step-3.7-flash",
@@ -140,6 +144,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     apiKey: "",
     apiBase: "https://api.anthropic.com",
     contextWindow: 200_000,
+  },
+  semanticAlignment: {
+    autoConfirmLowRisk: true,
   },
   updatedAt: new Date().toISOString(),
 };

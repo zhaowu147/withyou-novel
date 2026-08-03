@@ -1,0 +1,58 @@
+id: CHG-2026-023
+title: Add Pi reconnect policy and workspace resource scheduling
+status: completed
+created_at: 2026-08-03
+purpose: >-
+  Complete the next Pi harness resilience layer: reconnect the existing dock to
+  an interrupted SSE run, centralize common prompt scheduling policy, and
+  serialize conflicting Pi work on the same workspace resource without adding
+  a Git-specific lock.
+baseline:
+  source: current disk state after CHG-2026-022
+  evidence:
+    - src/app/(main)/_components/pi-dock.tsx
+    - src/lib/pi/harness/coordinator.ts
+    - src/lib/pi/harness/event-store.ts
+    - src/lib/pi/source-runtime.ts
+    - src/app/api/pi/route.ts
+scope:
+  included:
+    - Emit an early runId and sequence-aware Pi events for live/replayed client deduplication.
+    - Add bounded exponential polling recovery against the existing authenticated GET replay endpoint.
+    - Centralize prompt input normalization and workspace resource scheduling in the Pi harness.
+    - Keep Git operations unlocked and preserve existing tool-level safety checks.
+  excluded:
+    - A Git repository lock or Git-specific mutex.
+    - Changes to model selection, tool permissions, or business API semantics.
+    - Cross-machine distributed scheduling.
+expected_files:
+  - src/app/(main)/_components/pi-dock.tsx
+  - src/lib/pi/harness/policy.ts
+  - src/lib/pi/harness/coordinator.ts
+  - src/lib/pi/runtime.ts
+  - src/lib/pi/source-runtime.ts
+  - tests/pi-harness.test.ts
+validation:
+  - Pi reconnect and resource scheduling tests
+  - Biome check
+  - TypeScript noEmit
+  - Production build
+completed_at: 2026-08-03
+actual_files:
+  - src/app/(main)/_components/pi-dock.tsx
+  - src/lib/pi/harness/policy.ts
+  - src/lib/pi/harness/coordinator.ts
+  - src/lib/pi/harness/event-store.ts
+  - src/lib/pi/runtime.ts
+  - src/lib/pi/source-runtime.ts
+  - tests/pi-harness.test.ts
+validation_results:
+  - Pi harness, policy and scheduler tests: 5 passed, 0 failed
+  - Biome check: passed
+  - TypeScript noEmit: passed
+  - Next.js production build: passed
+decisions:
+  - Git operations remain unlocked; no Git-specific mutex or repository lock was added.
+  - Resource scheduling is process-local and workspace-scoped; unrelated workspace roots can run concurrently.
+  - Existing tool-level path, command, secret and proposal safety checks remain authoritative.
+revision: 2

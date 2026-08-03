@@ -1,0 +1,14 @@
+schema_version: 1
+project_id: withyou-novel
+name: WithYou Novel
+type: application
+status: active
+default_branch: main
+governance:
+  state_file: .project/current.yaml
+  areas_file: .project/areas.yaml
+  change_root: .project/changes
+  release_root: .project/releases
+  decision_root: .project/decisions
+  branch_prefix: change
+  release_prefix: release

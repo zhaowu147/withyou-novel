@@ -19,6 +19,13 @@ import { loadNovelDataFromDisk } from "@/lib/novel/server-novel-data";
 import { compileToolPrompt } from "@/lib/prompts/prompt-compiler";
 import type { ToolId } from "@/lib/prompts/prompt-package";
 import { getActivatedToolPackage } from "@/lib/prompts/prompt-store";
+import { compileSemanticContractForExecution } from "@/lib/semantic-alignment/prompts";
+import {
+  recordSemanticExecutionFailure,
+  requireExecutableSemanticContract,
+  SemanticAlignmentError,
+  validateSemanticExecution,
+} from "@/lib/semantic-alignment/service";
 import { readRuntimeSettings } from "@/lib/settings/runtime-model-config";
 import { buildCompressionConfig, getModelContextWindow } from "@/lib/settings/settings-store";
 import { PROMPT_TEMPLATES } from "@/lib/tools/prompt-templates";
@@ -86,6 +93,16 @@ export async function POST(req: NextRequest) {
     } catch (error) {
       return workspaceErrorResponse(error) ?? apiError("工作区校验失败", 500);
     }
+    const semanticContractId = typeof body.semanticContractId === "string" ? body.semanticContractId : "";
+    const semanticContractVersion = Number(body.semanticContractVersion);
+    if (!semanticContractId || !Number.isInteger(semanticContractVersion)) {
+      return apiError("正式执行前必须提供已确认的语义契约", 409, "SEMANTIC_CONTRACT_REQUIRED");
+    }
+    const semanticContract = await requireExecutableSemanticContract(
+      novelId,
+      semanticContractId,
+      semanticContractVersion,
+    );
 
     // 普通会话交给真正的 Writer Runtime：由模型按任务调用只读工具，
     // 定向读取当前作品文件、记忆、章节和追踪数据，并保存完整运行轨迹。
@@ -124,16 +141,32 @@ export async function POST(req: NextRequest) {
               objective: latestUserMessage,
               messages: runtimeMessages,
               signal: ac.signal,
-              maxTokens: 12_000,
+              maxTokens: 30_000,
               temperature: 0.83,
+              semanticContract,
               onEvent: (event) => emit({ ...event, type: "agent_progress", phase: event.type }),
             });
             for (let i = 0; i < result.output.length; i += 20) {
               emit({ type: "chunk", content: result.output.slice(i, i + 20) });
             }
-            emit({ type: "done", runId: result.run.id });
+            const validation = await validateSemanticExecution(semanticContract, result.output);
+            emit({
+              type: "semantic_validation",
+              contractId: semanticContract.id,
+              contractVersion: semanticContract.version,
+              validation,
+            });
+            emit({
+              type: "done",
+              runId: result.run.id,
+              contractId: semanticContract.id,
+              contractVersion: semanticContract.version,
+            });
             controller.close();
           } catch (error) {
+            await recordSemanticExecutionFailure(semanticContract, error).catch((recordError) =>
+              console.error("[chat] 记录语义执行失败状态时出错", recordError),
+            );
             emit({
               type: "error",
               message: error instanceof Error ? error.message : "Writer Agent 运行失败",
@@ -242,7 +275,11 @@ export async function POST(req: NextRequest) {
             dialogueMode: true,
           })
         : "";
-    const systemPrompt = buildRequestSystemPrompt();
+    const systemPrompt = `${buildRequestSystemPrompt()}
+
+---
+
+${compileSemanticContractForExecution(semanticContract)}`;
 
     // ─── 自动压缩上下文（动态限制，根据用户选择的模型） ───
     const outputTokenBudget = isToolSession ? 16_384 : 8_192;
@@ -261,7 +298,11 @@ export async function POST(req: NextRequest) {
     );
 
     // 使用压缩后的数据
-    const finalSystemPrompt = buildRequestSystemPrompt();
+    const finalSystemPrompt = `${buildRequestSystemPrompt()}
+
+---
+
+${compileSemanticContractForExecution(semanticContract)}`;
     const finalMessages: Array<{
       role: "user" | "assistant" | "system";
       content: string;
@@ -309,9 +350,23 @@ export async function POST(req: NextRequest) {
             signal: ac.signal,
           });
           for (let i = 0; i < reply.length; i += 20) e({ type: "chunk", content: reply.slice(i, i + 20) });
-          e({ type: "done" });
+          const validation = await validateSemanticExecution(semanticContract, reply);
+          e({
+            type: "semantic_validation",
+            contractId: semanticContract.id,
+            contractVersion: semanticContract.version,
+            validation,
+          });
+          e({
+            type: "done",
+            contractId: semanticContract.id,
+            contractVersion: semanticContract.version,
+          });
           s.close();
         } catch (err: unknown) {
+          await recordSemanticExecutionFailure(semanticContract, err).catch((recordError) =>
+            console.error("[chat] 记录语义执行失败状态时出错", recordError),
+          );
           e({ type: "error", message: (err as Error).message || "fail" });
           s.close();
         }
@@ -327,6 +382,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     if (error instanceof RequestGuardError) return apiError(error.message, error.status, error.code);
+    if (error instanceof SemanticAlignmentError) return apiError(error.message, error.status, error.code);
     const ownershipResponse = workspaceErrorResponse(error);
     if (ownershipResponse) return ownershipResponse;
     return apiError("Request failed", 500);

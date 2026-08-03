@@ -1,5 +1,5 @@
 export { buildAgentContextPlan } from "./context-planner";
-export { getAgentRun, listAgentRuns, resolveAgentRunConfirmation } from "./run-store";
+export { getAgentRun, listAgentRuns, recoverInterruptedAgentRuns, resolveAgentRunConfirmation } from "./run-store";
 export { getCoreAgentPolicy, readAgentRun, runCoreAgent } from "./runtime";
 export type {
   AgentContextPlan,
@@ -10,5 +10,7 @@ export type {
   AgentRuntimeEvent,
   AgentRuntimeRequest,
   AgentRuntimeResult,
+  AgentTaskPhase,
   CoreAgentId,
+  ReviewerFocus,
 } from "./types";

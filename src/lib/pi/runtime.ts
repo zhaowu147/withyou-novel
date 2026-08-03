@@ -3,18 +3,24 @@ import "server-only";
 import type { AgentSession, AgentSessionEvent, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { loadUserSkills } from "@/lib/chat/user-skills";
 import { projectDir, sanitizeNovelId } from "@/lib/local/paths";
 import { novelFS } from "@/lib/novel-fs";
 import { appStateDir } from "@/lib/runtime/app-paths";
 
+import { type HarnessRun, type HarnessSnapshot, piHarness } from "./harness/coordinator";
+import { PI_HARNESS_POLICY_VERSION } from "./harness/policy";
 import { createPiModelServices } from "./model";
 import { createPiProposal } from "./proposal-store";
 import type { PiAccessLevel } from "./source-permissions";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 export interface PiRuntimeEvent {
-  type: "text" | "thinking" | "tool_start" | "tool_end" | "done" | "error";
+  type: "run_started" | "text" | "thinking" | "tool_start" | "tool_end" | "done" | "error";
+  runId?: string;
+  sequence?: number;
   text?: string;
   toolCallId?: string;
   toolName?: string;
@@ -23,22 +29,32 @@ export interface PiRuntimeEvent {
   isError?: boolean;
 }
 
-interface RuntimeEntry {
-  session: AgentSession;
-  fingerprint: string;
-}
-
-const globalForPi = globalThis as typeof globalThis & {
-  __withyouPiSessions?: Map<string, Promise<RuntimeEntry>>;
-};
-const sessions = globalForPi.__withyouPiSessions ?? new Map<string, Promise<RuntimeEntry>>();
-globalForPi.__withyouPiSessions = sessions;
-
-const PI_RUNTIME_POLICY_VERSION = 2;
+const PI_RUNTIME_POLICY_VERSION = 3;
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 const PI_WORKSPACE_DRAFT_PREFIX = "workspace-pi-";
 
 type PiCodingAgentModule = typeof import("@earendil-works/pi-coding-agent");
+
+/**
+ * Project skills are deliberately opt-in: only valid SKILL.md files under this
+ * novel's .skills directory are passed to Pi.  Global agent skills, source
+ * maintenance skills and skills from another novel never enter this runtime.
+ */
+function projectSkillPaths(cwd: string, isWorkspaceDraft: boolean): string[] {
+  if (isWorkspaceDraft) return [];
+  return loadUserSkills(cwd).map((skill) => path.resolve(skill.sourcePath));
+}
+
+function projectSkillFingerprint(cwd: string, isWorkspaceDraft: boolean): string {
+  const entries = projectSkillPaths(cwd, isWorkspaceDraft).map((skillPath) => {
+    try {
+      return `${skillPath}:${createHash("sha256").update(fs.readFileSync(skillPath)).digest("hex")}`;
+    } catch {
+      return `${skillPath}:missing`;
+    }
+  });
+  return createHash("sha256").update(entries.join("\n"), "utf8").digest("hex");
+}
 
 async function loadPiCodingAgent(): Promise<PiCodingAgentModule> {
   // Keep this lookup opaque to Turbopack; the dependency is ESM and loads at request time.
@@ -199,7 +215,7 @@ async function createRuntime(
   workspaceId: string,
   novelId: string,
   accessLevel: Exclude<PiAccessLevel, "source">,
-): Promise<RuntimeEntry> {
+): Promise<{ session: AgentSession; fingerprint: string }> {
   const safeNovelId = sanitizeNovelId(novelId);
   const isWorkspaceDraft = safeNovelId.startsWith(PI_WORKSPACE_DRAFT_PREFIX);
   if (!isWorkspaceDraft && !novelFS.projectExists(safeNovelId)) {
@@ -214,6 +230,7 @@ async function createRuntime(
     ? path.join(appStateDir(), "pi-draft-workspaces", workspaceId, accessLevel)
     : projectDir(safeNovelId);
   if (isWorkspaceDraft) fs.mkdirSync(cwd, { recursive: true });
+  const additionalSkillPaths = projectSkillPaths(cwd, isWorkspaceDraft);
   const settingsManager = pi.SettingsManager.inMemory({
     defaultProvider: runtimeProvider,
     defaultModel: config.model,
@@ -222,8 +239,15 @@ async function createRuntime(
     cwd,
     agentDir,
     settingsManager,
+    additionalSkillPaths,
+    skillsOverride: (current) => ({
+      skills: current.skills.filter((skill) =>
+        additionalSkillPaths.some((allowedPath) => path.resolve(skill.filePath) === path.resolve(allowedPath)),
+      ),
+      diagnostics: current.diagnostics,
+    }),
     noExtensions: true,
-    noSkills: true,
+    noSkills: false,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
@@ -263,7 +287,7 @@ async function createRuntime(
   });
   return {
     session,
-    fingerprint: `${fingerprint}:${accessLevel}:policy-${PI_RUNTIME_POLICY_VERSION}`,
+    fingerprint: `${fingerprint}:${accessLevel}:policy-${PI_RUNTIME_POLICY_VERSION}:${projectSkillFingerprint(cwd, isWorkspaceDraft)}`,
   };
 }
 
@@ -271,26 +295,18 @@ async function getRuntime(
   workspaceId: string,
   novelId: string,
   accessLevel: Exclude<PiAccessLevel, "source">,
-): Promise<RuntimeEntry> {
+): Promise<{ session: AgentSession; fingerprint: string }> {
   const safeNovelId = sanitizeNovelId(novelId);
   const key = `${workspaceId}:${safeNovelId}:${accessLevel}`;
   const { fingerprint } = await createPiModelServices();
-  const scopedFingerprint = `${fingerprint}:${accessLevel}:policy-${PI_RUNTIME_POLICY_VERSION}`;
-  const existing = sessions.get(key);
-  if (existing) {
-    const entry = await existing;
-    if (entry.fingerprint === scopedFingerprint) return entry;
-    entry.session.dispose();
-    sessions.delete(key);
-  }
-  const pending = createRuntime(workspaceId, safeNovelId, accessLevel);
-  sessions.set(key, pending);
-  try {
-    return await pending;
-  } catch (error) {
-    sessions.delete(key);
-    throw error;
-  }
+  const isWorkspaceDraft = safeNovelId.startsWith(PI_WORKSPACE_DRAFT_PREFIX);
+  const cwd = isWorkspaceDraft
+    ? path.join(appStateDir(), "pi-draft-workspaces", workspaceId, accessLevel)
+    : projectDir(safeNovelId);
+  const scopedFingerprint = `${fingerprint}:${accessLevel}:policy-${PI_RUNTIME_POLICY_VERSION}:harness-${PI_HARNESS_POLICY_VERSION}:${projectSkillFingerprint(cwd, isWorkspaceDraft)}`;
+  return piHarness.getOrCreateSession(key, scopedFingerprint, () =>
+    createRuntime(workspaceId, safeNovelId, accessLevel),
+  );
 }
 
 function forwardEvent(event: AgentSessionEvent, emit: (event: PiRuntimeEvent) => void): void {
@@ -327,24 +343,40 @@ export async function promptPi(
   message: string,
   emit: (event: PiRuntimeEvent) => void,
   accessLevel: Exclude<PiAccessLevel, "source"> = "project",
-): Promise<void> {
-  const { session } = await getRuntime(workspaceId, novelId, accessLevel);
-  if (session.isStreaming) throw new Error("Pi 正在处理上一项任务");
-  const unsubscribe = session.subscribe((event) => forwardEvent(event, emit));
-  try {
-    await session.prompt(message);
-  } finally {
-    unsubscribe();
-  }
+): Promise<Readonly<HarnessRun>> {
+  const safeNovelId = sanitizeNovelId(novelId);
+  const scopeKey = `${workspaceId}:${safeNovelId}:${accessLevel}`;
+  const isWorkspaceDraft = safeNovelId.startsWith(PI_WORKSPACE_DRAFT_PREFIX);
+  const cwd = isWorkspaceDraft
+    ? path.join(appStateDir(), "pi-draft-workspaces", workspaceId, accessLevel)
+    : projectDir(safeNovelId);
+  return piHarness.prompt<AgentSessionEvent>({
+    scopeKey,
+    message,
+    resourceKeys: [`workspace:${path.resolve(cwd)}`],
+    getSession: () => getRuntime(workspaceId, safeNovelId, accessLevel),
+    onRun: (run) => emit({ type: "run_started", runId: run.id }),
+    onEvent: (event, run) =>
+      forwardEvent(event, (output) => {
+        const sequence = piHarness.recordEvent(scopeKey, run.id, { ...output, runId: run.id });
+        const correlated = { ...output, runId: run.id, sequence };
+        emit(correlated);
+      }),
+  });
 }
 
 export async function abortPi(workspaceId: string, novelId: string): Promise<void> {
   const prefix = `${workspaceId}:${sanitizeNovelId(novelId)}:`;
-  const matching = [...sessions.entries()].filter(([key]) => key.startsWith(prefix));
-  await Promise.all(
-    matching.map(async ([, existing]) => {
-      const { session } = await existing;
-      await session.abort();
-    }),
-  );
+  await piHarness.abortMatching(prefix);
+}
+
+export async function readPiRun(
+  workspaceId: string,
+  novelId: string,
+  runId: string,
+  accessLevel: Exclude<PiAccessLevel, "source"> = "project",
+  afterSequence = 0,
+): Promise<HarnessSnapshot> {
+  const safeNovelId = sanitizeNovelId(novelId);
+  return piHarness.readSnapshot(`${workspaceId}:${safeNovelId}:${accessLevel}`, runId, afterSequence);
 }

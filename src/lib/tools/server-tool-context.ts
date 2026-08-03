@@ -8,8 +8,8 @@
  * 这里做三件事：
  *   1. 自己从文件树回读 NovelData（loadNovelDataFromDisk，文件优先）；
  *   2. 复用前端同一份 buildToolContext 组装，避免前后端各写一套导致漂移；
- *   3. 服务端复核 TOOL_WORKFLOWS 的因果前置 —— 此前这个 DAG 只在前端强制，
- *      直接打 /api/generate 就能跳过（比如没有大纲直接要细纲）。
+ *   3. 服务端复核 TOOL_WORKFLOWS 的因果前置 —— 普通工具不能靠直连 API 跳过；
+ *      大纲/角色自然语言试点例外，缺口交给语义契约标记为待确认。
  */
 import "server-only";
 
@@ -19,6 +19,7 @@ import { isUntouchedScaffold } from "@/lib/novel/project-scaffold";
 import { loadNovelDataFromDisk } from "@/lib/novel/server-novel-data";
 import { novelFS } from "@/lib/novel-fs";
 import { summarizeGraphKnowledge } from "@/lib/tools/project-knowledge";
+import { isNaturalLanguageTaskTool } from "@/lib/tools/task-entry";
 import {
   ARTIFACT_LABELS,
   buildToolContext,
@@ -150,8 +151,13 @@ export async function buildServerToolContext(novelId: string, toolId: ToolId): P
   };
 }
 
-/** 前置不满足时给用户的说明；返回 null 表示前置齐备。 */
-export function workflowBlockReason(ctx: ServerToolContext): string | null {
+/**
+ * 前置不满足时给用户的说明；返回 null 表示前置齐备或当前工具允许自然语言继续。
+ * 大纲/角色试点由服务端继续读取已有事实，并将缺口交给语义契约标记为待确认，
+ * 避免 UI 已允许继续、但直连 API 又因为同一条件返回 409 的前后端分叉。
+ */
+export function workflowBlockReason(ctx: ServerToolContext, toolId?: ToolId): string | null {
+  if (toolId && isNaturalLanguageTaskTool(toolId)) return null;
   const parts: string[] = [];
   if (ctx.missingRequired.length) {
     parts.push(ctx.missingRequired.map((field) => ARTIFACT_LABELS[field]).join("、"));

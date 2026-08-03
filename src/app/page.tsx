@@ -45,6 +45,9 @@ const faqs = [
   { q: "能写多长？", a: "目前验证过百万字级别的连载。AI 会跟踪已写章节的上下文，保证前后逻辑一致。" },
 ];
 
+const featureCtaClassName =
+  "cursor-pointer rounded-lg border border-white/12 bg-white/5 font-medium text-sm text-white transition-colors hover:bg-white/10";
+
 export default function LandingPage() {
   return (
     <div className="min-h-screen bg-[#090B0F] text-white">
@@ -74,7 +77,7 @@ export default function LandingPage() {
           </Link>
           <Link
             href={AUTH_ROUTES.register}
-            className="cursor-pointer rounded-lg bg-[#2D9F5A] px-4 py-2 font-semibold text-sm transition-colors hover:bg-[#238B4A]"
+            className={`${featureCtaClassName} px-4 py-2`}
           >
             免费试用
           </Link>
@@ -96,13 +99,13 @@ export default function LandingPage() {
         <div className="flex gap-4">
           <Link
             href={AUTH_ROUTES.login}
-            className="cursor-pointer rounded-lg bg-[#2D9F5A] px-8 py-3.5 font-semibold text-sm text-white transition-all hover:bg-[#238B4A] hover:shadow-[0_0_30px_rgba(45,159,90,0.3)]"
+            className={`${featureCtaClassName} px-8 py-3.5`}
           >
             免费开始 →
           </Link>
           <a
             href="#features"
-            className="cursor-pointer rounded-lg border border-white/12 bg-white/5 px-8 py-3.5 font-medium text-sm text-white transition-colors hover:bg-white/10"
+            className={`${featureCtaClassName} px-8 py-3.5`}
           >
             查看功能
           </a>
@@ -175,11 +178,10 @@ export default function LandingPage() {
 
       {/* CTA */}
       <section className="relative z-10 py-24 text-center">
-        <h2 className="mb-4 font-bold text-3xl">脑子里那本书，现在就写出来</h2>
-        <p className="mb-10 text-white/50">注册即送 3 次完整生成额度。无需信用卡。</p>
+        <h2 className="mb-8 font-bold text-3xl">脑子里那本书，现在就写出来</h2>
         <Link
           href={AUTH_ROUTES.login}
-          className="inline-flex rounded-lg bg-[#2D9F5A] px-8 py-3.5 font-semibold text-sm text-white transition-all hover:bg-[#238B4A] hover:shadow-[0_0_30px_rgba(45,159,90,0.3)]"
+          className={`inline-flex ${featureCtaClassName} px-8 py-3.5`}
         >
           免费开始 →
         </Link>

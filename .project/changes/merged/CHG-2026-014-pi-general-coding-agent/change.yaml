@@ -1,0 +1,68 @@
+id: CHG-2026-014
+area: pi-general-coding-agent
+title: Pi 通用 Coding Agent 核心优化
+status: completed
+base: disk-2026-08-01
+revision: 1
+disk_baseline: Pi 已具备源码读写候选补丁、受控命令、Git/GitHub 基础工具和独立环境安装 API；环境准备尚未成为 Pi 的自然语言工具，Skill 检索/安装仅允许受限目录，通用跨行业 Skill 工作流未接通。
+areas:
+  - pi-runtime
+  - pi-coding-tools
+  - pi-environment
+  - pi-skills
+  - pi-ui
+scope:
+  - src/lib/pi/coding-tools.ts
+  - src/lib/pi/coding-environment.ts
+  - src/lib/pi/source-runtime.ts
+  - src/lib/pi/source-skill.ts
+  - src/lib/pi/source-skill-catalog.ts
+  - src/app/(main)/_components/pi-dock.tsx
+  - tests/coding-agent.test.ts
+  - tests/source-skill-catalog.test.ts
+  - .project/current.yaml
+goals:
+  - 让 Pi 成为行业无关的通用 coding Agent，不在任务领域上设白名单
+  - 让 Pi 自行检查并准备编程环境、项目依赖和 Python 虚拟环境
+  - 保持可恢复、高风险操作需明确意图、凭据和敏感信息不进入模型上下文
+  - 允许通过 GitHub 搜索任何领域的 Skill，并在用户明确要求使用或安装时下载文档型 Skill
+  - 提升命令工具、流式状态和新手可理解的结果反馈
+validation:
+  status: passed
+  plan:
+    - Pi 工具策略与输入校验单元测试
+    - Node 22+ 类型检查和 Pi/Skill 测试
+    - 全量测试与生产构建
+expected_files:
+  - src/lib/pi/coding-tools.ts
+  - src/lib/pi/coding-environment.ts
+  - src/lib/pi/source-runtime.ts
+  - src/lib/pi/source-skill.ts
+  - src/lib/pi/source-skill-catalog.ts
+  - src/app/(main)/_components/pi-dock.tsx
+  - tests/coding-agent.test.ts
+  - tests/source-skill-catalog.test.ts
+actual_files:
+  - src/lib/pi/coding-tools.ts
+  - src/lib/pi/coding-environment.ts
+  - src/lib/pi/source-runtime.ts
+  - src/lib/pi/source-skill.ts
+  - src/app/(main)/_components/pi-dock.tsx
+  - tests/coding-agent.test.ts
+  - .project/current.yaml
+validation_results:
+  - Node 24.14.0: TypeScript noEmit passed
+  - Biome lint for modified Pi files passed
+  - Node 24.14.0: full test suite passed (155 passed, 0 failed, 1 Windows symlink test skipped)
+  - Node 24.14.0: Next production build passed
+  - GitHub CLI: searched arbitrary-industry SKILL.md results and decoded a remote SKILL.md successfully
+  - Local dev server remained stopped during this validation
+actual_scope_notes:
+  - Pi now exposes environment status and prepare tools; preparation installs missing selected Windows runtimes, JavaScript dependencies, Python virtual environments and requirements.txt dependencies.
+  - Pi supports common Node, Python, Java, .NET, Go, Rust and other development CLIs without an industry allowlist.
+  - Arbitrary GitHub SKILL.md discovery, read and local installation are available through authenticated GitHub CLI; installation stores instructions only and never runs repository scripts.
+  - Reversible source edits now apply immediately through the existing checkpoint and rollback store. Remote push, destructive commands and credential boundaries remain explicit hard limits.
+  - This change deliberately does not connect Pi to novel or other project business APIs.
+deviations:
+  - src/lib/pi/source-skill-catalog.ts was retained as the curated fallback. General GitHub Skill discovery is implemented in Pi's direct GitHub tools instead.
+unresolved: []

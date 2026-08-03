@@ -1,0 +1,47 @@
+id: CHG-2026-020
+title: Apply the prototype visual language as the global With You theme
+status: merged
+created_at: 2026-08-02
+purpose: >-
+  Bring the reviewed top-rail prototype's light gradient, typography hierarchy,
+  soft glass surfaces, and restrained color accents into the formal application.
+baseline:
+  source: current disk state
+  evidence:
+    - src/app/globals.css
+    - src/lib/preferences/preferences-config.ts
+    - src/scripts/generate-theme-presets.ts
+    - tmp/ui-top-rail-prototype.html
+scope:
+  included:
+    - Add a first-class With You theme preset with light/dark tokens.
+    - Make the With You preset the default for new sessions.
+    - Apply the prototype's background, display font, selection, radius, and shadow language globally.
+    - Preserve existing preset choices and preference persistence.
+  excluded:
+    - Pi behavior, coding-agent APIs, and feature-area information architecture.
+    - Replacing the existing theme selector or deleting other presets.
+expected_files:
+  - src/app/globals.css
+  - src/styles/presets/with-you.css
+  - src/lib/preferences/preferences-config.ts
+  - src/lib/preferences/theme.ts
+  - .project/current.yaml
+validation:
+  - biome format/check on changed source files
+  - TypeScript noEmit check
+  - production build
+revision: 2
+completed_at: 2026-08-02
+actual_files:
+  - src/app/globals.css
+  - src/styles/presets/with-you.css
+  - src/lib/preferences/preferences-config.ts
+  - src/lib/preferences/theme.ts
+  - .project/current.yaml
+validation_results:
+  biome: passed
+  typescript_no_emit: passed
+  production_build: passed
+unresolved:
+  - Existing users who explicitly selected another saved theme remain on that choice; the With You theme is the new default.

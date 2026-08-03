@@ -1,7 +1,8 @@
 import "server-only";
 
+import { resolveProjectPackageManager } from "./coding-environment";
+import { getPiExecutionBackend, type PiExecutionBackend } from "./execution-backend";
 import { requireSourceAccess } from "./source-permissions";
-import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -94,9 +95,7 @@ function readAll(): PiSourceProposal[] {
   const file = storeFile();
   try {
     if (!fs.existsSync(/* turbopackIgnore: true */ file)) return [];
-    const parsed = JSON.parse(
-      fs.readFileSync(/* turbopackIgnore: true */ file, "utf8"),
-    ) as PiSourceProposal[];
+    const parsed = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ file, "utf8")) as PiSourceProposal[];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
@@ -119,9 +118,7 @@ export function createSourceProposal(input: {
   const workspace = requireSourceAccess();
   const target = resolveSourceFile(workspace, input.filePath);
   const existedBefore = fs.existsSync(/* turbopackIgnore: true */ target);
-  const previousContent = existedBefore
-    ? fs.readFileSync(/* turbopackIgnore: true */ target, "utf8")
-    : "";
+  const previousContent = existedBefore ? fs.readFileSync(/* turbopackIgnore: true */ target, "utf8") : "";
   const proposal: PiSourceProposal = {
     id: randomUUID(),
     filePath: path.relative(workspace, target).replaceAll("\\", "/"),
@@ -145,19 +142,33 @@ export function listSourceProposals(): PiSourceProposal[] {
   return readAll();
 }
 
-function git(workspace: string, args: string[], input?: string): string {
-  return execFileSync("git", args, {
+function git(workspace: string, args: string[], input: string | undefined, backend: PiExecutionBackend): string {
+  const result = backend.spawnSync("git", args, {
     cwd: workspace,
     encoding: "utf8",
     input,
     timeout: 20_000,
     windowsHide: true,
-  }).trim();
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`${result.stderr || "Git 命令失败"}`.trim());
+  return `${result.stdout || ""}`.trim();
 }
 
-function runTypecheck(workspace: string): PiSourceProposal["validation"] {
-  const executable = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  const result = spawnSync(executable, ["exec", "tsc", "--noEmit"], {
+function runTypecheck(workspace: string, backend: PiExecutionBackend): PiSourceProposal["validation"] {
+  const packageManager = resolveProjectPackageManager(workspace, backend);
+  if (!packageManager) {
+    return {
+      command: "未找到项目包管理器，未执行类型检查",
+      ok: false,
+      output: "未找到 pnpm、npm 或可用的 Corepack，源码已保留但需要先准备开发环境",
+    };
+  }
+  const args =
+    packageManager.manager === "npm"
+      ? ["exec", "--", "tsc", "--noEmit"]
+      : [...packageManager.prefixArgs, "exec", "tsc", "--noEmit"];
+  const result = backend.spawnSync(packageManager.executable, args, {
     cwd: workspace,
     encoding: "utf8",
     timeout: 120_000,
@@ -165,13 +176,17 @@ function runTypecheck(workspace: string): PiSourceProposal["validation"] {
   });
   const output = `${result.stdout || ""}${result.stderr || ""}`.trim().slice(-12_000);
   return {
-    command: "pnpm exec tsc --noEmit",
+    command: `${packageManager.displayName} ${args.slice(packageManager.prefixArgs.length).join(" ")}`,
     ok: result.status === 0,
     output: output || (result.status === 0 ? "类型检查通过" : "类型检查失败"),
   };
 }
 
-export function decideSourceProposal(proposalId: string, decision: "apply" | "reject"): PiSourceProposal {
+export function decideSourceProposal(
+  proposalId: string,
+  decision: "apply" | "reject",
+  backend: PiExecutionBackend = getPiExecutionBackend(),
+): PiSourceProposal {
   const workspace = requireSourceAccess();
   const proposals = readAll();
   const proposal = proposals.find((item) => item.id === proposalId);
@@ -197,8 +212,8 @@ export function decideSourceProposal(proposalId: string, decision: "apply" | "re
   }
 
   proposal.checkpoint = {
-    head: git(workspace, ["rev-parse", "HEAD"]),
-    blob: git(workspace, ["hash-object", "-w", "--stdin"], proposal.previousContent),
+    head: git(workspace, ["rev-parse", "HEAD"], undefined, backend),
+    blob: git(workspace, ["hash-object", "-w", "--stdin"], proposal.previousContent, backend),
   };
   fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(target), { recursive: true });
   const temp = `${target}.${process.pid}.pi.tmp`;
@@ -206,12 +221,15 @@ export function decideSourceProposal(proposalId: string, decision: "apply" | "re
   fs.renameSync(temp, target);
   proposal.status = "applied";
   proposal.decidedAt = new Date().toISOString();
-  proposal.validation = runTypecheck(workspace);
+  proposal.validation = runTypecheck(workspace, backend);
   writeAll(proposals);
   return proposal;
 }
 
-export function rollbackSourceProposal(proposalId: string): PiSourceProposal {
+export function rollbackSourceProposal(
+  proposalId: string,
+  backend: PiExecutionBackend = getPiExecutionBackend(),
+): PiSourceProposal {
   const workspace = requireSourceAccess();
   const proposals = readAll();
   const proposal = proposals.find((item) => item.id === proposalId);
@@ -233,7 +251,7 @@ export function rollbackSourceProposal(proposalId: string): PiSourceProposal {
     fs.unlinkSync(/* turbopackIgnore: true */ target);
   }
   proposal.status = "rolled_back";
-  proposal.validation = runTypecheck(workspace);
+  proposal.validation = runTypecheck(workspace, backend);
   writeAll(proposals);
   return proposal;
 }

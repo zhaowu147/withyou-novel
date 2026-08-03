@@ -9,7 +9,9 @@
 
 import { Agent, fetch as undiciFetch } from "undici";
 
+import { readOpenAIChatStream } from "@/lib/ai/openai-stream";
 import { UNTRUSTED_DATA_POLICY } from "@/lib/ai/prompt-boundary";
+import { isTransientTransportError } from "@/lib/ai/transport-errors";
 import { getRuntimeModelConfig, type ModelConfigScope } from "@/lib/settings/runtime-model-config";
 
 // ─── Rate Limiter: 每用户每 N 秒最多 M 次调用 ───
@@ -27,23 +29,21 @@ const directModelDispatcher =
   globalForGateway.__withyouDirectModelDispatcher ??
   new Agent({
     connectTimeout: 15_000,
-    headersTimeout: 120_000,
-    bodyTimeout: 300_000,
+    // Agent 的工具读取和长正文生成可能在首个响应前长时间推理，不能按普通聊天的 2/5 分钟上限中断。
+    headersTimeout: 300_000,
+    bodyTimeout: 900_000,
   });
 globalForGateway.__withyouDirectModelDispatcher = directModelDispatcher;
 const DIRECT_MODEL_HOSTS = new Set(["api.stepfun.com"]);
-const TRANSIENT_NETWORK_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"]);
-
-function fetchErrorCode(error: unknown): string {
-  if (!(error instanceof Error)) return "";
-  const directCode = (error as Error & { code?: string }).code;
-  const causeCode = (error.cause as { code?: string } | undefined)?.code;
-  return directCode || causeCode || "";
+function isTransientHttpStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
-function isTransientFetchError(error: unknown): boolean {
-  if (TRANSIENT_NETWORK_CODES.has(fetchErrorCode(error))) return true;
-  return error instanceof TypeError && /fetch failed/i.test(error.message);
+function retryDelay(response: Response | null, attempt: number): number {
+  const retryAfter = response?.headers.get("retry-after");
+  const seconds = retryAfter ? Number(retryAfter) : Number.NaN;
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1_000, 10_000);
+  return 500 * (attempt + 1);
 }
 
 async function modelFetch(url: string, init: RequestInit): Promise<Response> {
@@ -53,20 +53,28 @@ async function modelFetch(url: string, init: RequestInit): Promise<Response> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
+      let response: Response;
       if (useDirectConnection) {
-        return (await undiciFetch(url, {
+        response = (await undiciFetch(url, {
           method: init.method,
           headers: init.headers,
           body: typeof init.body === "string" ? init.body : undefined,
           signal: init.signal ?? undefined,
           dispatcher: directModelDispatcher,
         } as Parameters<typeof undiciFetch>[1])) as unknown as Response;
+      } else {
+        response = await fetch(url, init);
       }
-      return await fetch(url, init);
+      if (isTransientHttpStatus(response.status) && !init.signal?.aborted && attempt < 2) {
+        await response.body?.cancel().catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, retryDelay(response, attempt)));
+        continue;
+      }
+      return response;
     } catch (error) {
       lastError = error;
-      if (!isTransientFetchError(error) || init.signal?.aborted || attempt === 2) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+      if (!isTransientTransportError(error) || init.signal?.aborted || attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, retryDelay(null, attempt)));
     }
   }
   throw lastError;
@@ -139,6 +147,26 @@ export type MessageContent =
       | { type: "image_url"; image_url: { url: string; detail?: "auto" | "low" | "high" } }
     >;
 
+export interface GatewayToolLoopState {
+  messages: Array<{ role: string; content: MessageContent; tool_call_id?: string; tool_calls?: unknown[] }>;
+}
+
+export class GatewayToolLoopError extends Error {
+  readonly state: GatewayToolLoopState;
+  readonly cause: unknown;
+
+  constructor(error: unknown, state: GatewayToolLoopState) {
+    super(error instanceof Error ? error.message : "Tool loop 请求失败");
+    this.name = "GatewayToolLoopError";
+    this.cause = error;
+    this.state = state;
+  }
+}
+
+export function isTransientGatewayError(error: unknown): boolean {
+  return isTransientTransportError(error);
+}
+
 interface GatewayOptions {
   channel: ChannelType;
   systemPrompt: string;
@@ -150,6 +178,8 @@ interface GatewayOptions {
     type: "function";
     function: { name: string; description: string; parameters: Record<string, unknown> };
   }>;
+  toolLoopState?: GatewayToolLoopState;
+  resumeInstruction?: string;
 }
 
 /**
@@ -317,16 +347,20 @@ export async function gatewayToolLoop(
   onToolCall?: (name: string, args: Record<string, unknown>, result: string) => void,
 ): Promise<string> {
   const release = acquireChannelSlot(opts.channel);
+  let state: GatewayToolLoopState | undefined;
   try {
     const config = resolveChannelConfig(opts.channel);
     if (!config.apiKey) {
       throw new Error(`未配置${config.scope === "creationTool" ? "功能区" : "会话写作区"} API Key`);
     }
 
-    const messages: Array<{ role: string; content: MessageContent; tool_call_id?: string; tool_calls?: unknown[] }> = [
-      { role: "system", content: `${UNTRUSTED_DATA_POLICY}\n\n${opts.systemPrompt}` },
-      ...opts.messages,
-    ];
+    state = opts.toolLoopState ?? {
+      messages: [{ role: "system", content: `${UNTRUSTED_DATA_POLICY}\n\n${opts.systemPrompt}` }, ...opts.messages],
+    };
+    const messages = state.messages;
+    if (opts.toolLoopState && opts.resumeInstruction) {
+      messages.push({ role: "system", content: opts.resumeInstruction });
+    }
 
     for (let loop = 0; loop < 10; loop++) {
       const res = await modelFetch(`${config.apiBase}/chat/completions`, {
@@ -338,32 +372,22 @@ export async function gatewayToolLoop(
           max_tokens: opts.maxTokens ?? 30000,
           temperature: opts.temperature ?? 0.83,
           tools: opts.tools,
+          stream: true,
         }),
         signal: opts.signal,
       });
 
-      if (!res.ok) throw new Error(`[${opts.channel}] API ${res.status}`);
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        throw new Error(`[${opts.channel}] API ${res.status}${detail ? `: ${detail.slice(0, 500)}` : ""}`);
+      }
+      if (!res.body) throw new Error("No response body");
+      const msg = await readOpenAIChatStream(res.body);
 
-      const json = (await res.json()) as {
-        choices?: Array<{
-          message?: {
-            content?: string;
-            tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
-          };
-          finish_reason?: string;
-        }>;
-      };
+      if (msg.toolCalls.length > 0) {
+        messages.push({ role: "assistant", content: msg.content, tool_calls: msg.toolCalls });
 
-      const choice = json.choices?.[0];
-      if (!choice) throw new Error("No response from model");
-
-      const msg = choice.message;
-      if (!msg) throw new Error("No message in response");
-
-      if (msg.tool_calls && msg.tool_calls.length > 0) {
-        messages.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
-
-        for (const tc of msg.tool_calls) {
+        for (const tc of msg.toolCalls) {
           let args: Record<string, unknown> = {};
           try {
             args = JSON.parse(tc.function.arguments);
@@ -377,10 +401,13 @@ export async function gatewayToolLoop(
         continue;
       }
 
-      return msg.content || "";
+      return msg.content;
     }
 
     throw new Error("Tool loop exceeded max iterations");
+  } catch (error) {
+    if (state) throw new GatewayToolLoopError(error, state);
+    throw error;
   } finally {
     release();
   }

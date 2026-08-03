@@ -40,14 +40,26 @@ test("同源 Origin 放行（本机前端 fetch POST）", () => {
   assert.deepEqual(check({ originHeader: "http://localhost:3000" }), { ok: true });
 });
 
+test("localhost 与 127.0.0.1 的同端口回环别名放行", () => {
+  assert.deepEqual(
+    checkLocalOrigin({
+      requestUrl: "http://localhost:3211/api/workspaces/activate",
+      hostHeader: "127.0.0.1:3211",
+      originHeader: "http://127.0.0.1:3211",
+      forwardedFor: null,
+    }),
+    { ok: true },
+  );
+});
+
 test("跨源 Origin 一律拒绝（外部网页 CSRF 主路径）", () => {
   const r = check({ originHeader: "https://evil.com" });
   assert.equal(r.ok, false);
   // 同为 loopback 但端口不同也算跨源（另一个本地应用不能打这个端口）
   const r2 = check({ originHeader: "http://localhost:5500" });
   assert.equal(r2.ok, false);
-  // 127.0.0.1 与 localhost 字面不同源 —— 浏览器同源模型如此，保持一致
-  const r3 = check({ originHeader: "http://127.0.0.1:3000" });
+  // 127.0.0.1 与 localhost 同端口属于本机别名兼容路径，换端口仍拒绝
+  const r3 = check({ originHeader: "http://127.0.0.1:3001" });
   assert.equal(r3.ok, false);
 });
 

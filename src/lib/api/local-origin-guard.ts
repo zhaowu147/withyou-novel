@@ -71,7 +71,16 @@ export function checkLocalOrigin(input: OriginCheckInput): OriginCheckResult {
       // 包含沙箱 iframe / file:// 场景的 Origin: "null"
       return { ok: false, status: 403, reason: "请求来源无效" };
     }
-    if (originUrl.origin !== url.origin) {
+    const sameOrigin = originUrl.origin === url.origin;
+    // 本地开发代理可能把 request.url 规范化为 localhost，而浏览器保留
+    // 127.0.0.1（或反过来）。两者都必须是 loopback 且端口/协议一致，
+    // 才允许这个安全的本机别名兼容，不放宽到任意跨源请求。
+    const sameLoopbackOrigin =
+      originUrl.protocol === url.protocol &&
+      originUrl.port === url.port &&
+      isLoopbackHostname(originUrl.hostname) &&
+      isLoopbackHostname(url.hostname);
+    if (!sameOrigin && !sameLoopbackOrigin) {
       return { ok: false, status: 403, reason: "已拒绝跨来源请求" };
     }
     if (!input.allowNonLoopback && !isLoopbackHostname(originUrl.hostname)) {

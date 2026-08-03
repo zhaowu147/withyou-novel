@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "runtime": {
+    "node": ">=22",
+    "packageManagers": ["pnpm", "npm"],
+    "git": "required",
+    "python": ">=3.11 (when requirements.txt exists)"
+  },
+  "windowsProvisioner": {
+    "provider": "winget",
+    "scope": "user",
+    "packages": ["OpenJS.NodeJS.LTS", "Git.Git", "Python.Python.3.12"]
+  },
+  "projectInstall": ["pnpm install --frozen-lockfile", "npm install", "python -m venv .withyou-python"]
+}

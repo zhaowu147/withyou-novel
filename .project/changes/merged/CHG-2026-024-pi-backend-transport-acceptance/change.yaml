@@ -1,0 +1,56 @@
+id: CHG-2026-024
+title: Unify Pi backend SSE transport and run end-to-end acceptance
+status: completed
+created_at: 2026-08-03
+purpose: >-
+  Make the backend Pi call chain explicit and testable by sharing the SSE
+  transport between both Pi endpoints, deduplicating terminal events, and
+  propagating disconnect cancellation through the existing harness.
+baseline:
+  source: current disk state after CHG-2026-023
+  evidence:
+    - src/app/api/pi/route.ts
+    - src/app/api/pi/source/route.ts
+    - src/lib/pi/harness/coordinator.ts
+scope:
+  included:
+    - Extract common Pi SSE start, error, terminal and cancellation handling.
+    - Preserve authenticated route boundaries and existing event payload names.
+    - Add a deterministic backend call-chain test covering run start, resource scheduling, live events, persisted replay and cancel.
+    - Keep Git operations unlocked and avoid model/tool policy changes.
+  excluded:
+    - Frontend changes beyond the already completed reconnect behavior.
+    - New external services or distributed queues.
+    - Git-specific locking.
+expected_files:
+  - src/lib/pi/harness/transport.ts
+  - src/app/api/pi/route.ts
+  - src/app/api/pi/source/route.ts
+  - tests/pi-backend-call-chain.test.ts
+validation:
+  - Backend Pi call-chain acceptance test
+  - Existing Pi harness tests
+  - Full project test suite
+  - Biome check
+  - TypeScript noEmit
+  - Production build
+revision: 1
+completed_at: 2026-08-03
+actual_files:
+  - src/lib/pi/harness/transport.ts
+  - src/app/api/pi/route.ts
+  - src/app/api/pi/source/route.ts
+  - tests/pi-backend-call-chain.test.ts
+  - package.json
+validation_results:
+  backend_call_chain: passed
+  pi_harness_tests: 6 passed
+  full_project_tests: 170 total, 169 passed, 0 failed, 1 skipped
+  biome: passed
+  typescript_no_emit: passed
+  production_build: passed
+decisions:
+  - Authentication remains owned by each route while transport behavior is shared.
+  - Terminal done/error events are emitted at most once and disconnect cancellation closes the stream before aborting the active harness run.
+  - Git remains intentionally unlocked; no Git-specific concurrency policy was introduced.
+unresolved: []

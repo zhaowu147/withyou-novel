@@ -1,0 +1,92 @@
+id: CHG-2026-008
+area: semantic-alignment
+title: 提示词体系、语义对齐层与一轮式 AI 填写流程重构
+status: completed
+base: disk-2026-07-30
+revision: 4
+disk_baseline: 当前磁盘代码；Next.js 16 + Electron 本地应用，以小说文件树为事实源，已有 Agent Runtime、提示词分层、实体/记忆/图谱与本地 JSON 持久化；CHG-2026-004/005/007 仍为活动状态
+areas:
+  - prompt-system
+  - semantic-alignment
+  - agent-runtime
+  - entity-workflow
+  - sidebar-ui
+  - reliability
+  - project-governance
+scope:
+  - src/chat/prompts/**
+  - src/lib/prompts/**
+  - src/lib/ai/**
+  - src/lib/agents/**
+  - src/lib/entities/**
+  - src/app/api/**
+  - src/app/(main)/_components/**
+  - tests/**
+  - docs/**
+  - .project/current.yaml
+  - PROJECT_STATE.md
+goals:
+  - 完整理解当前磁盘架构、入口、数据流、持久化和运行基线，不以 Git 历史作为项目事实
+  - 将 C:\Users\朝雾\Desktop\ai_novel_prompts.md 中适合当前架构的提示词整合、替换或优化到项目提示词体系
+  - 按 G:\WithYou 语义对齐层功能规格.md 完整实现语义对齐能力，并保持小说/工作区隔离
+  - 将左侧功能区的“AI帮我填”文字入口改为小图标
+  - 将 AI 填写 Agent 改为一次性读取已有信息并在一轮生成中返回结果，避免多次工具调用与重复取证
+  - 从全局视角实施架构与容错优化，并产出 Markdown 说明
+  - 单独验收后端，再走完整项目流程并修复发现的问题
+validation:
+  status: completed
+  results:
+    - pnpm test：148 tests，147 通过，0 失败，1 项 Windows 符号链接能力跳过
+    - pnpm build：Next.js 16.2.11 生产构建和 TypeScript 检查通过
+    - 后端验收：tmp/semantic-backend-acceptance-20260801080742.json，23 个记录项，0 失败
+    - 浏览器：新会话、隔离绑定、工具面板和唯一图标入口可达；本地代理回环别名误判已修复
+  plan:
+    - 建立现有全量测试、静态检查和生产构建基线
+    - 为语义对齐、提示词装配和一轮式填写补充单元/集成测试
+    - 执行 Node 22 下全量测试、Biome 检查和 Next.js 生产构建
+    - 启动本地后端，逐项调用核心 API 验收成功与失败路径
+    - 通过浏览器走小说创建、资料填写、Agent 生成、保存与读取主流程
+implemented:
+  - 建立本次重大变更磁盘记录
+  - 完成外部提示词到当前模板、Agent 硬规则、输出协议和去 AI 化规则的整合
+  - 完成语义对齐 Parser/Gate/Validator、契约持久化、版本/哈希/来源过期与跨进程执行锁
+  - 完成语义卡片、设置开关和正式生成门禁
+  - 将功能区 AI 填写改为无障碍 Sparkles 图标和单轮全字段协议，旧单字段接口返回 410
+  - 统一 SSE 消费、提示词包原子恢复、路径校验和本地会话首次路由恢复
+  - 编写架构与容错优化说明及单元/后端验收夹具
+unresolved:
+  - 当前本机外部模型请求未返回可用结果，浏览器真实模型输出无法作为验收证据；协议、权限和错误处理已通过后端验收
+files:
+  created:
+    - .project/changes/active/CHG-2026-008-semantic-alignment-and-agent-fill/change.yaml
+    - docs/SEMANTIC_ALIGNMENT_LAYER.md
+    - docs/ARCHITECTURE_AND_FAULT_TOLERANCE_OPTIMIZATIONS_2026-07-30.md
+    - tmp/semantic-backend-acceptance.mjs
+  modified:
+    - src/lib/api/local-origin-guard.ts
+    - tests/local-origin-guard.test.ts
+    - src/lib/semantic-alignment/types.ts
+    - src/lib/semantic-alignment/core.ts
+    - src/lib/semantic-alignment/prompts.ts
+    - src/lib/semantic-alignment/store.ts
+    - src/lib/semantic-alignment/service.ts
+    - src/lib/semantic-alignment/client.ts
+    - src/lib/tools/form-fill.ts
+    - src/lib/ai/sse-client.ts
+    - src/lib/ai/conversations.ts
+    - src/lib/prompts/prompt-compiler.ts
+    - src/lib/prompts/prompt-store.ts
+    - src/app/api/semantic-contracts/route.ts
+    - src/app/api/semantic-contracts/[id]/route.ts
+    - src/app/api/generate/route.ts
+    - src/app/(main)/_components/semantic-contract-card.tsx
+    - src/app/(main)/_components/tool-panel.tsx
+    - src/app/(main)/_components/workspace.tsx
+    - tests/semantic-alignment.test.ts
+    - tests/form-fill.test.ts
+    - tests/sse-client.test.ts
+    - tests/prompt-store.test.ts
+    - tests/semantic-contract-store.test.ts
+    - package.json
+    - .project/current.yaml
+    - PROJECT_STATE.md

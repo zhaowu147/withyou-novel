@@ -105,6 +105,13 @@ function toolDefinition(
 }
 
 export const AGENT_READ_TOOLS: AgentToolDefinition[] = [
+  toolDefinition(
+    "read_context_bundle",
+    "按当前 Agent 的上下文计划一次读取定向资料包：计划文件、近期章节、相关记忆和结构化追踪事实。写作 Agent 必须优先调用；仅当结果明确缺失时再追加单文件读取。",
+    {
+      maxChars: { type: "integer", description: "资料包中文件和近期正文的总字符上限，默认 68000，上限 96000" },
+    },
+  ),
   toolDefinition("project_list_files", "列出当前小说可读取的文件树，可按目录前缀过滤。", {
     prefix: { type: "string", description: "可选目录前缀，如 设定/ 或 正文/" },
   }),
@@ -232,6 +239,80 @@ async function executeReadTool(
   args: Record<string, unknown>,
 ): Promise<ToolExecutionResult> {
   const { novelId, plan } = context;
+  if (name === "read_context_bundle") {
+    const maxChars = intArg(args.maxChars, 68_000, 8_000, 96_000);
+    const perFileLimit = (path: string) => {
+      if (path === "大纲/细纲.md") return 16_000;
+      if (path === "大纲/总纲.md") return 8_000;
+      if (path.startsWith("设定/")) return 5_000;
+      return 2_500;
+    };
+    let remaining = maxChars;
+    const files: AgentFileTrace[] = [];
+    const projectFiles: Array<{ path: string; content: string; truncated: boolean }> = [];
+    for (const preferredPath of plan.preferredFiles) {
+      if (remaining <= 0) break;
+      const found = visibleFiles(novelId).find((file) => file.path === preferredPath);
+      if (!found) continue;
+      const full = novelFS.readFile(novelId, found.rawPath);
+      const content = full.slice(0, Math.min(remaining, perFileLimit(found.path)));
+      projectFiles.push({ path: found.path, content, truncated: full.length > content.length });
+      files.push({ path: found.path, reason: "定向上下文资料包", chars: content.length });
+      remaining -= content.length;
+    }
+
+    const latestChapter = listChapterFiles(novelId).at(-1)?.number ?? 0;
+    const recentStart = Math.max(1, latestChapter - plan.recentChapterCount + 1);
+    const chapters: Array<{ number: number; title: string; content: string; truncated: boolean }> = [];
+    for (let chapterNumber = recentStart; chapterNumber <= latestChapter && remaining > 0; chapterNumber += 1) {
+      const chapter = loadChapterFile(novelId, chapterNumber);
+      if (!chapter) continue;
+      const content = chapter.content.slice(0, Math.min(remaining, 12_000));
+      chapters.push({
+        number: chapter.number,
+        title: chapter.title,
+        content,
+        truncated: chapter.content.length > content.length,
+      });
+      files.push({ path: `正文/第${chapter.number}章`, reason: "近期正文上下文", chars: content.length });
+      remaining -= content.length;
+    }
+
+    const recall = await retrieveNovelMemories({
+      novelId,
+      query: plan.query,
+      currentChapter: latestChapter + 1,
+      canonicalLimit: plan.memoryLimits.canonical,
+      longLimit: plan.memoryLimits.long,
+      shortLimit: plan.memoryLimits.short,
+    });
+    const memories = [...recall.canonical, ...recall.long, ...recall.short];
+    return {
+      value: {
+        plan: { preferredFiles: plan.preferredFiles, recentChapterCount: plan.recentChapterCount },
+        projectFiles,
+        recentChapters: chapters,
+        memories: memoryRecallToMarkdown(recall),
+        entities: plan.includeEntities
+          ? listEntities(novelId)
+              .filter((entity) => entity.importance !== "low")
+              .slice(0, 40)
+          : [],
+        foreshadows: plan.includeForeshadows ? listForeshadows(novelId).slice(0, 60) : [],
+        timeline: plan.includeTimeline ? listTimeline(novelId, 60) : [],
+        missingPreferredFiles: plan.preferredFiles.filter((path) => !projectFiles.some((file) => file.path === path)),
+      },
+      summary: `读取 ${projectFiles.length} 份计划资料、${chapters.length} 章近期正文和 ${memories.length} 条相关记忆`,
+      files,
+      memories: memories.map((memory) => ({
+        id: memory.id,
+        tier: memory.tier,
+        kind: memory.kind,
+        source: sourceLabel(memory),
+      })),
+    };
+  }
+
   if (name === "project_list_files") {
     const prefix = normalizedPath(textArg(args.prefix, 200));
     const files = visibleFiles(novelId)
@@ -446,10 +527,12 @@ export function createAgentToolRegistry(context: RuntimeToolContext): {
   definitions: AgentToolDefinition[];
   execute: (name: string, args: Record<string, unknown>) => Promise<string>;
   didSignalDone: () => boolean;
+  doneSummary: () => string | null;
   didCreateProposal: () => boolean;
 } {
   let toolCalls = 0;
   let signalledDone = false;
+  let completedSummary: string | null = null;
   let createdProposal = false;
   return {
     definitions: context.agentId === "memory" ? [...AGENT_READ_TOOLS, MEMORY_CANDIDATE_TOOL] : AGENT_READ_TOOLS,
@@ -461,7 +544,13 @@ export function createAgentToolRegistry(context: RuntimeToolContext): {
       toolCalls += 1;
       try {
         const result = await executeReadTool(context, name, args);
-        if (name === "agent_done") signalledDone = true;
+        if (name === "agent_done") {
+          signalledDone = true;
+          completedSummary =
+            typeof result.value === "object" && result.value !== null
+              ? String((result.value as { summary?: unknown }).summary ?? "").trim() || null
+              : null;
+        }
         if (
           name === "propose_memory_candidates" &&
           typeof result.value === "object" &&
@@ -501,6 +590,7 @@ export function createAgentToolRegistry(context: RuntimeToolContext): {
       }
     },
     didSignalDone: () => signalledDone,
+    doneSummary: () => completedSummary,
     didCreateProposal: () => createdProposal,
   };
 }

@@ -3,14 +3,22 @@ import type { NextRequest } from "next/server";
 import { generateAgnesImage } from "@/lib/ai/agnes-image";
 import { buildCoverImagePrompt, type CoverRatio, resolveCoverSize } from "@/lib/ai/cover-prompt";
 import { gatewayCall } from "@/lib/ai/gateway";
-import { wrapUntrustedData } from "@/lib/ai/prompt-boundary";
 import { getApiUser } from "@/lib/api/auth";
 import { enforceRateLimit, RequestGuardError, readJsonBody } from "@/lib/api/request-guards";
 import { apiError, apiSuccess, apiUnauthorized } from "@/lib/api/response";
-import { compileToolFieldPrompt, compileToolPrompt } from "@/lib/prompts/prompt-compiler";
+import { compileToolFormFillPrompt, compileToolPrompt } from "@/lib/prompts/prompt-compiler";
 import type { ToolId } from "@/lib/prompts/prompt-package";
 import { getActivatedCoverPackage, getActivatedToolPackage } from "@/lib/prompts/prompt-store";
 import { expectsStructuredOutput, extractJsonText, validateStructuredOutput } from "@/lib/prompts/structured-output";
+import { compileSemanticContractForExecution } from "@/lib/semantic-alignment/prompts";
+import {
+  recordSemanticExecutionFailure,
+  requireExecutableSemanticContract,
+  SemanticAlignmentError,
+  validateSemanticExecution,
+} from "@/lib/semantic-alignment/service";
+import type { SemanticContract } from "@/lib/semantic-alignment/types";
+import { buildFullFormFillTask, parseFullFormFill } from "@/lib/tools/form-fill";
 import { PROMPT_TEMPLATES } from "@/lib/tools/prompt-templates";
 import { buildServerToolContext, isToolId, workflowBlockReason } from "@/lib/tools/server-tool-context";
 import { verifyWorkspaceRequest } from "@/lib/workspaces/ownership";
@@ -20,6 +28,7 @@ export const maxDuration = 300;
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
+  let executingSemanticContract: SemanticContract | null = null;
   try {
     const user = await getApiUser();
     if (!user) return apiUnauthorized();
@@ -41,13 +50,6 @@ export async function POST(req: NextRequest) {
     const serverContext =
       novelId && isToolId(body.toolType) ? await buildServerToolContext(novelId, body.toolType) : null;
     const projectContext = serverContext?.context ?? "";
-    const projectDataOnlyPrompt = projectContext.trim()
-      ? `以下是当前小说文件树中已经确认的资料，仅作为事实背景使用：\n${wrapUntrustedData(
-          "project_context",
-          projectContext,
-        )}`
-      : "";
-
     const resolveToolPrompt = (toolType: string) => {
       const template = PROMPT_TEMPLATES[toolType];
       if (!template || !novelId) {
@@ -154,12 +156,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ─── AI填充（基于各自工具的prompt，隔离记忆） ───
-    if (body.action === "ai-fill") {
-      const { toolType, variables, targetField } = body as {
+    // ─── 一轮式 AI 表单填写 ───
+    // serverContext 已在路由入口读取一次；此分支只进行一次模型调用，不启用工具循环。
+    if (body.action === "ai-fill-form") {
+      const { toolType, variables } = body as {
         toolType: string;
         variables: Record<string, string>;
-        targetField: string;
       };
 
       if (!toolType || !PROMPT_TEMPLATES[toolType]) {
@@ -168,60 +170,36 @@ export async function POST(req: NextRequest) {
 
       const template = PROMPT_TEMPLATES[toolType];
       const effectivePrompt = resolveToolPrompt(toolType);
-      const targetVariable = template.variableSchema.find((variable) => variable.key === targetField);
-      if (!targetVariable) {
-        return apiError("目标字段不属于当前工具", 400, "INVALID_TARGET_FIELD");
-      }
-      const targetLabel = targetVariable.label;
       const allowedFieldKeys = new Set(template.variableSchema.map((variable) => variable.key));
-      const isPromptlessCharacterExperiment = toolType === "character";
-
-      // 构建已有信息摘要
-      const filledFields = Object.entries(variables)
-        .filter(([key, value]) => allowedFieldKeys.has(key) && key !== targetField && value?.trim())
-        .map(([k, v]) => {
-          const label = template.variableSchema.find((sv) => sv.key === k)?.label || k;
-          return `${label}：${v}`;
-        })
-        .join("\n");
-
-      // 基于当前工具的system prompt，为指定字段生成建议
-      const systemPrompt = isPromptlessCharacterExperiment
-        ? projectDataOnlyPrompt
-        : `${compileToolFieldPrompt({
-            toolId: toolType as ToolId,
-            basePrompt: effectivePrompt.basePrompt,
-            activatedPrompt: effectivePrompt.package?.systemPrompt,
-            projectContext,
-          })}
-
-## 当前任务
-用户正在填写「${template.name}」工具的表单。请根据已有信息，为「${targetLabel}」字段生成一个建议值。
-
-要求：
-- 直接输出建议内容，不要解释
-- 内容要与已有信息风格一致
-- 长度适中，不要太长`;
-
-      const userPrompt = filledFields
-        ? `当前工具表单中的已有信息：\n${wrapUntrustedData("tool_form_fields", filledFields)}\n\n请为「${targetLabel}」生成建议。`
-        : `请为「${targetLabel}」生成一个建议值。`;
-
-      // 使用 tool channel，保持隔离
-      const result = await gatewayCall({
+      const safeVariables = Object.fromEntries(
+        Object.entries(variables ?? {})
+          .filter(([key, value]) => allowedFieldKeys.has(key) && typeof value === "string")
+          .map(([key, value]) => [key, value.slice(0, 20_000)]),
+      );
+      const raw = await gatewayCall({
         channel: "tool",
-        systemPrompt,
-        messages: [{ role: "user", content: userPrompt }],
-        maxTokens: 1024,
-        temperature: 0.83,
+        systemPrompt: compileToolFormFillPrompt({
+          toolId: toolType as ToolId,
+          basePrompt: effectivePrompt.basePrompt,
+          activatedPrompt: effectivePrompt.package?.systemPrompt,
+          projectContext,
+        }),
+        messages: [{ role: "user", content: buildFullFormFillTask(template.variableSchema, safeVariables) }],
+        maxTokens: 4_096,
+        temperature: 0.45,
       });
+      const fields = parseFullFormFill(raw, template.variableSchema, safeVariables);
 
       return apiSuccess({
-        result,
+        fields,
+        filledCount: Object.keys(fields).length,
         activePrompt: effectivePrompt.package
           ? { id: effectivePrompt.package.id, name: effectivePrompt.package.name }
           : null,
       });
+    }
+    if (body.action === "ai-fill") {
+      return apiError("单字段 AI 填写已停用，请使用一轮式表单填写", 410, "AI_FILL_DEPRECATED");
     }
 
     // ─── 文本工具生成 ───
@@ -237,34 +215,44 @@ export async function POST(req: NextRequest) {
     // 服务端复核因果前置：TOOL_WORKFLOWS 此前只在前端强制，直接打这个路由能绕过。
     // 依据是服务端刚回读的文件树，不是前端说它有什么。
     if (serverContext) {
-      const blocked = workflowBlockReason(serverContext);
+      const blocked = workflowBlockReason(serverContext, isToolId(body.toolType) ? body.toolType : undefined);
       if (blocked) return apiError(blocked, 409, "WORKFLOW_PREREQUISITE_MISSING");
     }
 
     const template = PROMPT_TEMPLATES[toolType];
     const effectivePrompt = resolveToolPrompt(toolType);
     const promptText = template.buildUserPrompt(variables);
-    // 角色生成当前处于纯模型能力对照实验：不叠加角色模板、提示词包、工具契约
-    // 或 JSON 修复；只保留用户表单，以及文件树中已经确认的事实资料。
-    const isPromptlessCharacterExperiment = toolType === "character";
+    const semanticContractId = typeof body.semanticContractId === "string" ? body.semanticContractId : "";
+    const semanticContractVersion = Number(body.semanticContractVersion);
+    if (!semanticContractId || !Number.isInteger(semanticContractVersion)) {
+      return apiError("正式生成前必须提供已确认的语义契约", 409, "SEMANTIC_CONTRACT_REQUIRED");
+    }
+    const semanticContract = await requireExecutableSemanticContract(
+      novelId,
+      semanticContractId,
+      semanticContractVersion,
+    );
+    executingSemanticContract = semanticContract;
 
     // 创作工具用 chat channel（step-3.7-flash 强模型）+ 更大 token 上限
     let result = await gatewayCall({
       channel: "tool",
-      systemPrompt: isPromptlessCharacterExperiment
-        ? projectDataOnlyPrompt
-        : compileToolPrompt({
-            toolId: toolType as ToolId,
-            basePrompt: effectivePrompt.basePrompt,
-            activatedPrompt: effectivePrompt.package?.systemPrompt,
-            projectContext,
-          }),
+      systemPrompt: `${compileToolPrompt({
+        toolId: toolType as ToolId,
+        basePrompt: effectivePrompt.basePrompt,
+        activatedPrompt: effectivePrompt.package?.systemPrompt,
+        projectContext,
+      })}
+
+---
+
+${compileSemanticContractForExecution(semanticContract)}`,
       messages: [{ role: "user", content: promptText }],
       maxTokens: 16384,
       temperature: 0.83,
     });
 
-    const validationError = isPromptlessCharacterExperiment ? null : validateStructuredOutput(toolType, result);
+    const validationError = validateStructuredOutput(toolType, result);
     if (validationError) {
       const repaired = await gatewayCall({
         channel: "tool",
@@ -288,14 +276,26 @@ export async function POST(req: NextRequest) {
       result = extractJsonText(result);
     }
 
+    const semanticValidation = await validateSemanticExecution(semanticContract, result);
     return apiSuccess({
       result,
+      semanticContract: {
+        id: semanticContract.id,
+        version: semanticContract.version,
+        validation: semanticValidation,
+      },
       activePrompt: effectivePrompt.package
         ? { id: effectivePrompt.package.id, name: effectivePrompt.package.name }
         : null,
     });
   } catch (e: unknown) {
+    if (executingSemanticContract) {
+      await recordSemanticExecutionFailure(executingSemanticContract, e).catch((error) =>
+        console.error("[generate] 记录语义执行失败状态时出错", error),
+      );
+    }
     if (e instanceof RequestGuardError) return apiError(e.message, e.status, e.code);
+    if (e instanceof SemanticAlignmentError) return apiError(e.message, e.status, e.code);
     const message = e instanceof Error ? e.message : "Unknown error";
     console.error("Generate route error:", message);
     return apiError("请求失败，请重试", 500);

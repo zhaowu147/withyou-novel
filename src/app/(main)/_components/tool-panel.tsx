@@ -18,8 +18,11 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { addHistory, getAllHistory, type HistoryEntry } from "@/lib/ai/history";
+import { actOnSemanticContract, createSemanticContract, updateSemanticContract } from "@/lib/semantic-alignment/client";
+import type { SemanticContractEditableFields, SemanticContractEnvelope } from "@/lib/semantic-alignment/types";
 import { getDynamicToolState } from "@/lib/tools/project-knowledge";
 import type { PromptTemplate } from "@/lib/tools/prompt-templates";
+import { getTaskEntryCopy, isNaturalLanguageTaskTool } from "@/lib/tools/task-entry";
 import {
   ARTIFACT_LABELS,
   ARTIFACT_PRODUCERS,
@@ -31,6 +34,8 @@ import { workspaceFetch } from "@/lib/workspaces/client";
 import { checkFieldHealth, useFileTreeMetaStore } from "@/stores/file-tree-meta";
 import type { ToolId } from "@/stores/session-owner";
 import type { NovelData } from "@/types/novel";
+
+import { SemanticContractCard } from "./semantic-contract-card";
 
 /**
  * 轻量 Markdown → JSX 渲染器
@@ -267,13 +272,20 @@ function renderTable(lines: string[], baseKey: string): React.ReactNode {
 async function callGenerateAPI(
   toolType: string,
   variables: Record<string, string>,
+  semanticContract: { id: string; version: number },
   novelId?: string,
   signal?: AbortSignal,
 ): Promise<string> {
   const res = await workspaceFetch("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ toolType, variables, novel_id: novelId }),
+    body: JSON.stringify({
+      toolType,
+      variables,
+      novel_id: novelId,
+      semanticContractId: semanticContract.id,
+      semanticContractVersion: semanticContract.version,
+    }),
     signal,
   });
   if (!res.ok) {
@@ -285,23 +297,21 @@ async function callGenerateAPI(
   return data.data.result;
 }
 
-// AI填充 API 调用
-async function callAiFillAPI(
+// 一轮式 AI 表单填写：一次请求读取一次服务端上下文，一次模型调用返回全部空字段。
+async function callAiFillFormAPI(
   toolType: string,
   variables: Record<string, string>,
-  targetField: string,
   novelId?: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<Record<string, string>> {
   const res = await workspaceFetch("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       toolType,
       variables,
-      targetField,
       novel_id: novelId,
-      action: "ai-fill",
+      action: "ai-fill-form",
     }),
     signal,
   });
@@ -311,7 +321,7 @@ async function callAiFillAPI(
   }
   const data = await res.json();
   if (!data.success) throw new Error(data.error?.message || "请求失败");
-  return data.data.result;
+  return data.data.fields;
 }
 
 interface ToolPanelProps {
@@ -564,6 +574,8 @@ export function ToolPanel({
   onApplyToChat,
 }: ToolPanelProps) {
   const toolId = template.toolType as ToolId;
+  const taskEntryCopy = getTaskEntryCopy(toolId);
+  const usesTaskEntry = isNaturalLanguageTaskTool(toolId);
   const dynamicState = useMemo(() => getDynamicToolState(toolId, novelData), [toolId, novelData]);
   const [variables, setVariables] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
@@ -573,15 +585,19 @@ export function ToolPanel({
   const [result, setResult] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [aiFilling, setAiFilling] = useState<string | null>(null);
+  const [semanticEnvelope, setSemanticEnvelope] = useState<SemanticContractEnvelope | null>(null);
+  const [semanticBusy, setSemanticBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [showAdvancedFields, setShowAdvancedFields] = useState(!usesTaskEntry);
   const [selectedCandidate, setSelectedCandidate] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fileTreeMeta = useFileTreeMetaStore((state) => state.fields);
   const workflowStatus = useMemo(() => getWorkflowStatus(toolId, novelData), [toolId, novelData]);
   const hasBlockingDependency =
     workflowStatus.missingRequired.length > 0 || workflowStatus.missingRequiredGroups.length > 0;
+  const generationBlocked = hasBlockingDependency && !usesTaskEntry;
   const outputField = TOOL_WORKFLOWS[toolId].outputField;
   const outputHealth = outputField ? checkFieldHealth(outputField, fileTreeMeta) : null;
 
@@ -595,7 +611,9 @@ export function ToolPanel({
     setResult(null);
     setError(null);
     setShowHistory(false);
+    setShowAdvancedFields(!isNaturalLanguageTaskTool(toolId));
     setSelectedCandidate(null);
+    setSemanticEnvelope(null);
     abortRef.current?.abort();
     setHistory(getAllHistory().filter((h) => h.toolType === template.toolType));
   }, [template.toolType, template.variableSchema, toolId]);
@@ -681,34 +699,65 @@ export function ToolPanel({
     [novelId],
   );
 
-  // AI填充：基于当前工具的prompt，为指定字段生成建议
-  const handleAiFill = useCallback(
-    async (targetKey: string) => {
-      setAiFilling(targetKey);
-      setError(null);
+  // 一轮式 AI 填写：一次读取项目与已有表单，一轮返回所有空字段。
+  const handleAiFill = useCallback(async () => {
+    setAiFilling("form");
+    setError(null);
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const fields = await callAiFillFormAPI(template.toolType, variables, novelId, controller.signal);
+      const count = Object.keys(fields).length;
+      setVariables((current) => ({ ...current, ...fields }));
+      if (count) toast.success(`已一次填写 ${count} 个空字段`);
+      else toast.info("现有信息不足，或表单没有需要填写的空字段");
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name === "AbortError") return;
+      const msg = e instanceof Error ? e.message : "AI填充失败";
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setAiFilling(null);
+    }
+  }, [template.toolType, variables, novelId]);
+
+  const executeGeneration = useCallback(
+    async (semanticContract: { id: string; version: number }) => {
+      setLoading(true);
+      setError(null);
+      abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
-
+      const promptText = template.buildUserPrompt(variables);
       try {
-        const result = await callAiFillAPI(template.toolType, variables, targetKey, novelId, controller.signal);
-        // 解析结果并填充到目标字段
-        updateVar(targetKey, result);
-        toast.success(`已填充「${template.variableSchema.find((v) => v.key === targetKey)?.label}」`);
+        const full = await callGenerateAPI(template.toolType, variables, semanticContract, novelId, controller.signal);
+        setResult(full);
+        setSemanticEnvelope(null);
+        addHistory({
+          toolType: template.toolType,
+          toolName: template.name,
+          variables,
+          promptText,
+          resultText: full,
+          saved: false,
+        });
+        setHistory(getAllHistory().filter((h) => h.toolType === template.toolType));
       } catch (e: unknown) {
         if (e instanceof Error && e.name === "AbortError") return;
-        const msg = e instanceof Error ? e.message : "AI填充失败";
+        const msg = e instanceof Error ? e.message : "请求失败";
         setError(msg);
         toast.error(msg);
       } finally {
-        setAiFilling(null);
+        setLoading(false);
       }
     },
-    [template, variables, updateVar, novelId],
+    [template, variables, novelId],
   );
 
   const handleGenerate = useCallback(async () => {
-    if (hasBlockingDependency) {
+    if (generationBlocked) {
       const direct = workflowStatus.missingRequired.map((field) => ARTIFACT_LABELS[field]);
       const groups = workflowStatus.missingRequiredGroups.map((group) =>
         group.map((field) => ARTIFACT_LABELS[field]).join(" 或 "),
@@ -716,39 +765,86 @@ export function ToolPanel({
       setError(`请先完成：${[...direct, ...groups].join("、")}`);
       return;
     }
-    setLoading(true);
+    setSemanticBusy(true);
     setError(null);
     setResult(null);
     setSelectedCandidate(null);
+    setSemanticEnvelope(null);
 
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const promptText = template.buildUserPrompt(variables);
-
     try {
-      const full = await callGenerateAPI(template.toolType, variables, novelId, controller.signal);
-      setResult(full);
-
-      addHistory({
-        toolType: template.toolType,
-        toolName: template.name,
-        variables,
-        promptText,
-        resultText: full,
-        saved: false,
+      if (!novelId) throw new Error("当前会话尚未绑定小说，无法建立语义契约");
+      const next = await createSemanticContract({
+        novelId,
+        taskKind: "creation_tool",
+        toolId: template.toolType,
+        userInput: template.buildUserPrompt(variables),
+        formData: variables,
+        signal: controller.signal,
       });
-      setHistory(getAllHistory().filter((h) => h.toolType === template.toolType));
+      setSemanticEnvelope(next);
+      if (next.contract.status === "confirmed") {
+        await executeGeneration({ id: next.contract.id, version: next.contract.version });
+      }
     } catch (e: unknown) {
       if (e instanceof Error && e.name === "AbortError") return;
       const msg = e instanceof Error ? e.message : "请求失败";
       setError(msg);
       toast.error(msg);
     } finally {
-      setLoading(false);
+      setSemanticBusy(false);
     }
-  }, [hasBlockingDependency, template, variables, novelId, workflowStatus]);
+  }, [generationBlocked, template, variables, novelId, workflowStatus, executeGeneration]);
+
+  const handleSemanticUpdate = useCallback(
+    async (fields: SemanticContractEditableFields) => {
+      if (!novelId || !semanticEnvelope) return;
+      setSemanticBusy(true);
+      try {
+        setSemanticEnvelope(
+          await updateSemanticContract({
+            novelId,
+            contractId: semanticEnvelope.contract.id,
+            version: semanticEnvelope.contract.version,
+            fields,
+          }),
+        );
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "保存语义修改失败");
+      } finally {
+        setSemanticBusy(false);
+      }
+    },
+    [novelId, semanticEnvelope],
+  );
+
+  const handleSemanticAction = useCallback(
+    async (action: "confirm" | "reject" | "reparse", saveAsLongTerm = false) => {
+      if (!novelId || !semanticEnvelope) return;
+      setSemanticBusy(true);
+      try {
+        const next = await actOnSemanticContract({
+          novelId,
+          contractId: semanticEnvelope.contract.id,
+          version: semanticEnvelope.contract.version,
+          action,
+          saveAsLongTerm,
+        });
+        setSemanticEnvelope(action === "reject" ? null : next);
+        if (action === "confirm") {
+          await executeGeneration({ id: next.contract.id, version: next.contract.version });
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "语义契约操作失败");
+      } finally {
+        setSemanticBusy(false);
+      }
+    },
+    [novelId, semanticEnvelope, executeGeneration],
+  );
 
   // 存入文件树
   const handleSaveToFile = useCallback(() => {
@@ -860,7 +956,7 @@ export function ToolPanel({
                 {outputField && <span className="text-muted-foreground">产出：{ARTIFACT_LABELS[outputField]}</span>}
               </div>
 
-              {hasBlockingDependency ? (
+              {hasBlockingDependency && !usesTaskEntry ? (
                 <div className="flex items-start gap-2 text-destructive">
                   <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
                   <div>
@@ -886,6 +982,16 @@ export function ToolPanel({
                         </span>
                       ))}
                     </div>
+                  </div>
+                </div>
+              ) : hasBlockingDependency && usesTaskEntry ? (
+                <div className="flex items-start gap-2 text-amber-600">
+                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                  <div>
+                    <p>部分资料还没有确认，但可以先按你的描述继续。</p>
+                    <p className="mt-1 text-muted-foreground">
+                      系统会把已有项目内容作为事实，缺口会标记为待确认，不会自动写入文件树。
+                    </p>
                   </div>
                 </div>
               ) : (
@@ -920,60 +1026,114 @@ export function ToolPanel({
               )}
             </div>
 
-            {/* Variables */}
-            {template.variableSchema.map((v) => (
-              <div key={v.key}>
-                <div className="mb-1 flex items-center justify-between">
-                  <span className="font-medium text-muted-foreground text-xs">{v.label}</span>
-                  {v.type !== "select" && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 px-2 text-xs"
-                      onClick={() => handleAiFill(v.key)}
-                      disabled={aiFilling !== null || loading}
-                    >
-                      {aiFilling === v.key ? (
-                        <>
-                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                          生成中
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="mr-1 h-3 w-3" />
-                          AI帮我填
-                        </>
-                      )}
-                    </Button>
-                  )}
+            {/* Natural-language task entry / legacy advanced fields */}
+            {usesTaskEntry && taskEntryCopy ? (
+              <div className="space-y-3 rounded-xl border border-primary/25 bg-primary/[0.035] p-4">
+                <div>
+                  <p className="font-medium text-[11px] text-primary uppercase tracking-[0.12em]">
+                    {taskEntryCopy.eyebrow}
+                  </p>
+                  <h3 className="mt-1 font-semibold text-base text-foreground">{taskEntryCopy.title}</h3>
+                  <p className="mt-1 text-muted-foreground text-xs leading-relaxed">{taskEntryCopy.description}</p>
                 </div>
-                {v.type === "select" && v.options ? (
-                  <div className="flex gap-2">
-                    {v.options.map((opt) => (
-                      <button
-                        type="button"
-                        key={opt}
-                        onClick={() => updateVar(v.key, opt)}
-                        className={`flex-1 cursor-pointer rounded-lg border px-3 py-2 text-sm transition-all ${
-                          variables[v.key] === opt
-                            ? "border-primary bg-primary/10 font-medium text-primary"
-                            : "border-border bg-background text-muted-foreground hover:border-primary/50"
-                        }`}
-                      >
-                        {opt}
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <Textarea
-                    value={variables[v.key] || ""}
-                    onChange={(e) => updateVar(v.key, e.target.value)}
-                    placeholder={v.placeholder}
-                    className="h-16 resize-none text-sm"
-                  />
-                )}
+                <Textarea
+                  value={variables.intent || ""}
+                  onChange={(e) => updateVar("intent", e.target.value)}
+                  placeholder={taskEntryCopy.placeholder}
+                  className="min-h-28 resize-y bg-background text-sm"
+                  aria-label="本次创作意图"
+                />
+                <p className="text-[11px] text-muted-foreground">{taskEntryCopy.helper}</p>
+                <button
+                  type="button"
+                  className="text-muted-foreground text-xs underline-offset-4 hover:text-foreground hover:underline"
+                  onClick={() => setShowAdvancedFields((current) => !current)}
+                >
+                  {showAdvancedFields ? "收起更多条件" : taskEntryCopy.advancedLabel}
+                </button>
               </div>
-            ))}
+            ) : (
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-xs">创作参数</span>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  className="size-7"
+                  onClick={() => void handleAiFill()}
+                  disabled={aiFilling !== null || loading || semanticBusy}
+                  title="智能填写全部空字段"
+                  aria-label="智能填写全部空字段"
+                >
+                  {aiFilling ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+                </Button>
+              </div>
+            )}
+            {(!usesTaskEntry || showAdvancedFields) && (
+              <div className="space-y-3 rounded-lg border border-border/70 bg-muted/15 p-3">
+                {usesTaskEntry && (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-xs">更多条件</span>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      className="size-7"
+                      onClick={() => void handleAiFill()}
+                      disabled={aiFilling !== null || loading || semanticBusy}
+                      title="智能补全可选条件"
+                      aria-label="智能补全可选条件"
+                    >
+                      {aiFilling ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+                    </Button>
+                  </div>
+                )}
+                {template.variableSchema
+                  .filter((v) => v.key !== "intent")
+                  .map((v) => (
+                    <div key={v.key}>
+                      <div className="mb-1 flex items-center">
+                        <span className="font-medium text-muted-foreground text-xs">{v.label}</span>
+                      </div>
+                      {v.type === "select" && v.options ? (
+                        <div className="flex gap-2">
+                          {v.options.map((opt) => (
+                            <button
+                              type="button"
+                              key={opt}
+                              onClick={() => updateVar(v.key, opt)}
+                              className={`flex-1 cursor-pointer rounded-lg border px-3 py-2 text-sm transition-all ${
+                                variables[v.key] === opt
+                                  ? "border-primary bg-primary/10 font-medium text-primary"
+                                  : "border-border bg-background text-muted-foreground hover:border-primary/50"
+                              }`}
+                            >
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <Textarea
+                          value={variables[v.key] || ""}
+                          onChange={(e) => updateVar(v.key, e.target.value)}
+                          placeholder={v.placeholder}
+                          className="h-16 resize-none bg-background text-sm"
+                        />
+                      )}
+                    </div>
+                  ))}
+              </div>
+            )}
+
+            {semanticEnvelope && (
+              <SemanticContractCard
+                contract={semanticEnvelope.contract}
+                history={semanticEnvelope.history}
+                busy={semanticBusy || loading}
+                onUpdate={handleSemanticUpdate}
+                onConfirm={(saveAsLongTerm) => handleSemanticAction("confirm", saveAsLongTerm)}
+                onReparse={() => handleSemanticAction("reparse")}
+                onReject={() => handleSemanticAction("reject")}
+              />
+            )}
 
             {/* Error */}
             {error && (
@@ -986,7 +1146,9 @@ export function ToolPanel({
             <div className="flex gap-2">
               <Button
                 onClick={handleGenerate}
-                disabled={loading || aiFilling !== null || hasBlockingDependency}
+                disabled={
+                  loading || semanticBusy || aiFilling !== null || generationBlocked || semanticEnvelope !== null
+                }
                 className="flex-1"
                 size="default"
               >

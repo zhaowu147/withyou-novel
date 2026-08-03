@@ -26,6 +26,10 @@
       {
         "from": "../src/app/favicon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "coding-environment.json",
+        "to": "coding-environment.json"
       }
     ],
     "asar": true,

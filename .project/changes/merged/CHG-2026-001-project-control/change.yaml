@@ -1,0 +1,13 @@
+id: CHG-2026-001
+area: project-governance
+title: 建立通用项目变更管理工具和规范
+status: merged
+base: main
+branch: main
+revision: 1
+supersedes: null
+files:
+  - .project/**
+  - PROJECT_CONTROL.md
+  - scripts/project-status.mjs
+  - package.json

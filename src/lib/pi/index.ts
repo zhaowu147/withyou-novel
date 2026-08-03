@@ -5,7 +5,7 @@ export {
   type PiFileProposal,
   type PiProposalStatus,
 } from "./proposal-store";
-export { abortPi, type PiRuntimeEvent, promptPi } from "./runtime";
+export { abortPi, type PiRuntimeEvent, promptPi, readPiRun } from "./runtime";
 export {
   getSourceAccessStatus,
   lockSourceAccess,
@@ -23,4 +23,25 @@ export {
   type PiSourceProposalStatus,
   rollbackSourceProposal,
 } from "./source-proposal-store";
-export { abortSourcePi, promptSourcePi } from "./source-runtime";
+export { abortSourcePi, promptSourcePi, readSourcePiRun } from "./source-runtime";
+export {
+  enabledSourceSkillPaths,
+  installSourceSkill,
+  listSourceSkills,
+  readSourceSkillResource,
+  setSourceSkillEnabled,
+  sourceSkillFingerprint,
+  uninstallSourceSkill,
+  type InstallSourceSkillInput,
+  type SourceSkillIntegrity,
+  type SourceSkillRecord,
+  type SourceSkillResourceRecord,
+  type SourceSkillSource,
+  type SourceSkillView,
+} from "./source-skill-manager";
+export {
+  downloadSourceSkillCatalogItem,
+  searchSourceSkillCatalog,
+  type SourceSkillCatalogBundle,
+  type SourceSkillCatalogItem,
+} from "./source-skill-catalog";

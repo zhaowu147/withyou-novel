@@ -5,8 +5,10 @@
 import "server-only";
 
 import { ALIAS_METADATA_KEY, findEntityByIdentity, mergeAliases, readAliases } from "@/lib/entities/alias-registry";
+import { contentVersionHash } from "@/lib/novel/content-hash";
 import { novelFS } from "@/lib/novel-fs";
 
+import { withChapterMutationLock } from "./chapter-mutation-lock";
 import { newId, nowIso, readCollection, readJsonFile, updateCollection, writeJsonFile } from "./json-db";
 import { LOCAL_USER_ID, novelsBaseDir, projectDir, sanitizeNovelId, vaultDir } from "./paths";
 import * as fs from "node:fs";
@@ -472,37 +474,50 @@ export async function saveChapterFile(rec: {
   content: string;
   is_final?: boolean;
   id?: string;
+  /** 传入时必须在同一小说写锁内复核，防止两个调用同时通过旧版本检查。 */
+  expectedContentHash?: string;
 }): Promise<LocalChapterFile> {
-  ensureProject(rec.novel_id);
-  // 写正文 md（novel-fs 有独立的文件，不与集合锁竞争）
-  novelFS.writeChapter(rec.novel_id, rec.number, rec.title, rec.content);
-  const now = nowIso();
-  let row: LocalChapterFile | null = null;
-  let maxNum = rec.number;
-  await updateCollection<LocalChapterFile>(rec.novel_id, "chapter_files", (rows) => {
-    const idx = rows.findIndex((r) => r.number === rec.number);
-    const next: LocalChapterFile = {
-      id: rec.id ?? (idx >= 0 ? rows[idx].id : newId()),
-      novel_id: rec.novel_id,
-      number: rec.number,
-      title: rec.title,
-      content: rec.content,
-      word_count: rec.content.length,
-      is_final: rec.is_final ?? false,
-      updated_at: now,
-    };
-    if (idx >= 0) rows[idx] = next;
-    else rows.push(next);
-    row = next;
-    maxNum = Math.max(maxNum, ...rows.map((r) => r.number));
-    return rows;
-  });
-  if (!row) throw new Error("[store] saveChapterFile updater 未执行");
+  return withChapterMutationLock(rec.novel_id, rec.number, async () => {
+    ensureProject(rec.novel_id);
+    if (rec.expectedContentHash !== undefined) {
+      const currentContent = novelFS.readChapter(rec.novel_id, rec.number);
+      const currentHash = currentContent === null ? null : contentVersionHash(currentContent);
+      if (currentHash !== rec.expectedContentHash) {
+        throw new Error("章节已被其他修改更新，请重新读取后再保存");
+      }
+    }
 
-  // 更新 meta total_chapters
-  const meta = ensureProject(rec.novel_id);
-  saveNovelMeta(rec.novel_id, { total_chapters: Math.max(meta.total_chapters, maxNum) });
-  return row;
+    // 正文文件和 chapter_files 索引现在处于同一小说写锁内，避免一边先写正文、
+    // 另一边再写索引造成内容与索引错位。
+    novelFS.writeChapter(rec.novel_id, rec.number, rec.title, rec.content);
+    const now = nowIso();
+    let row: LocalChapterFile | null = null;
+    let maxNum = rec.number;
+    await updateCollection<LocalChapterFile>(rec.novel_id, "chapter_files", (rows) => {
+      const idx = rows.findIndex((r) => r.number === rec.number);
+      const next: LocalChapterFile = {
+        id: rec.id ?? (idx >= 0 ? rows[idx].id : newId()),
+        novel_id: rec.novel_id,
+        number: rec.number,
+        title: rec.title,
+        content: rec.content,
+        word_count: rec.content.length,
+        is_final: rec.is_final ?? false,
+        updated_at: now,
+      };
+      if (idx >= 0) rows[idx] = next;
+      else rows.push(next);
+      row = next;
+      maxNum = Math.max(maxNum, ...rows.map((r) => r.number));
+      return rows;
+    });
+    if (!row) throw new Error("[store] saveChapterFile updater 未执行");
+
+    // 更新 meta total_chapters，仍在同一本小说写锁内。
+    const meta = ensureProject(rec.novel_id);
+    saveNovelMeta(rec.novel_id, { total_chapters: Math.max(meta.total_chapters, maxNum) });
+    return row;
+  });
 }
 
 export function assembleVaultPrompt(novelId: string, cfg = { maxFs: 10, maxTl: 10 }) {

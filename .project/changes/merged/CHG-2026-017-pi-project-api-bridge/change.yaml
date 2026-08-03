@@ -1,0 +1,27 @@
+id: CHG-2026-017
+title: Pi 项目 API 桥接
+status: completed
+created_at: 2026-08-02
+completed_at: 2026-08-02
+scope:
+  - 将当前工作区绑定的小说数据层直接接入 Pi coding Agent
+  - 提供受约束的项目上下文、章节、创作字段、实体、伏笔、时间线、记忆和图谱读取
+  - 提供带版本校验和检查点回滚的章节写入，以及显式的创作字段/实体/伏笔写入
+  - 不开放跨小说访问、删除、记忆审批、图谱任意替换或 HTTP 回环
+actual_files:
+  - src/lib/pi/project-tools.ts
+  - src/lib/pi/source-runtime.ts
+  - src/app/(main)/_components/pi-dock.tsx
+  - tests/project-api-tools.test.ts
+  - tests/project-api-runtime.test.ts
+  - package.json
+validation:
+  tests: "Node 24 全量测试 161 项，160 通过，0 失败，1 项 Windows 符号链接能力跳过"
+  typecheck: "tsc --noEmit 通过"
+  build: "Next production build 通过"
+  runtime: "临时隔离小说项目完成章节读取、版本冲突拒绝、写入检查点和回滚闭环"
+notes:
+  - Pi 工具直接调用现有本地服务层，不通过 HTTP 回环，保持当前工作区租约和数据根语义
+  - 章节写入只允许已有章节且必须携带 expectedHash；项目字段、章节均可用检查点回滚
+  - 记忆只允许召回或暂存候选，图谱桥接阶段只读；高风险删除/审批/任意替换未开放
+revision: 1

@@ -1,0 +1,13 @@
+id: CHG-2026-002
+area: project-governance
+title: 迁移并重建项目真实状态基线
+status: merged
+base: c409526
+branch: main
+revision: 1
+supersedes: null
+files:
+  - PROJECT_STATE.md
+  - HANDOFF.md
+  - .project/current.yaml
+  - .project/areas.yaml
